@@ -1,0 +1,102 @@
+{
+  "config": {
+    "datasets": [
+      "reassemble",
+      "droid",
+      "mml",
+      "fractal_rt1"
+    ],
+    "cap_per_dataset": 0,
+    "epochs": 30,
+    "sync_fps": 50.0,
+    "sequence_length": 50,
+    "stride": 10,
+    "hidden": 256,
+    "layers": 2,
+    "dropout": 0.3,
+    "batch": 256,
+    "lr": 0.001,
+    "weight_decay": 0.0001,
+    "patience": 8,
+    "seed": 42,
+    "features": [
+      "ee_pos_x",
+      "ee_pos_y",
+      "ee_pos_z",
+      "ee_rot_qx",
+      "ee_rot_qy",
+      "ee_rot_qz",
+      "ee_rot_qw",
+      "gripper_state",
+      "ee_vel_x",
+      "ee_vel_y",
+      "ee_vel_z",
+      "ee_rot_vel_x",
+      "ee_rot_vel_y",
+      "ee_rot_vel_z",
+      "gripper_vel"
+    ]
+  },
+  "sequence_counts": {
+    "train": 1615,
+    "val": 345,
+    "test": 350
+  },
+  "window_counts": {
+    "train": 283532,
+    "val": 55155,
+    "test": 59898
+  },
+  "train_time_sec": 10115.567215681076,
+  "test_metrics": {
+    "accuracy": 0.7009416007212261,
+    "auc": 0.6324571203088516,
+    "f1": 0.2649870748020188,
+    "confusion_matrix": [
+      [
+        38756,
+        13664
+      ],
+      [
+        4249,
+        3229
+      ]
+    ],
+    "classification_report": "              precision    recall  f1-score   support\n\n     success       0.90      0.74      0.81     52420\n     failure       0.19      0.43      0.26      7478\n\n    accuracy                           0.70     59898\n   macro avg       0.55      0.59      0.54     59898\nweighted avg       0.81      0.70      0.74     59898\n"
+  },
+  "history": {
+    "train_loss": [
+      1.07275081343121,
+      1.0327675099726077,
+      1.008394512542218,
+      0.9778581926600828,
+      0.9493757407732019,
+      0.8932891815443134,
+      0.8626814163689583,
+      0.8410710605179391,
+      0.8215577831220928
+    ],
+    "val_loss": [
+      1.0546688131634492,
+      1.0730305717421558,
+      1.123268224273084,
+      1.137143267551437,
+      1.216330085859496,
+      1.2932415536553081,
+      1.3312791701820161,
+      1.3831437721727762,
+      1.408790477241079
+    ],
+    "val_accuracy": [
+      0.6844347747257729,
+      0.7517904088477926,
+      0.695929652796664,
+      0.6996827123560874,
+      0.712138518719971,
+      0.6924848155198985,
+      0.6866648535944158,
+      0.7021122291723325,
+      0.7169250294624241
+    ]
+  }
+}

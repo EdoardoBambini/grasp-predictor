@@ -1,0 +1,44 @@
+solid pyramid_black
+  facet normal 0 0 -1
+    outer loop
+      vertex -0.02 -0.02 0.0
+      vertex 0.02 0.02 0.0
+      vertex 0.02 -0.02 0.0
+    endloop
+  endfacet
+  facet normal 0 0 -1
+    outer loop
+      vertex -0.02 -0.02 0.0
+      vertex -0.02 0.02 0.0
+      vertex 0.02 0.02 0.0
+    endloop
+  endfacet
+  facet normal 0 -1 1
+    outer loop
+      vertex -0.02 -0.02 0.0
+      vertex 0.02 -0.02 0.0
+      vertex 0.0 0.0 0.04
+    endloop
+  endfacet
+  facet normal 1 0 1
+    outer loop
+      vertex 0.02 -0.02 0.0
+      vertex 0.02 0.02 0.0
+      vertex 0.0 0.0 0.04
+    endloop
+  endfacet
+  facet normal 0 1 1
+    outer loop
+      vertex 0.02 0.02 0.0
+      vertex -0.02 0.02 0.0
+      vertex 0.0 0.0 0.04
+    endloop
+  endfacet
+  facet normal -1 0 1
+    outer loop
+      vertex -0.02 0.02 0.0
+      vertex -0.02 -0.02 0.0
+      vertex 0.0 0.0 0.04
+    endloop
+  endfacet
+endsolid pyramid_black

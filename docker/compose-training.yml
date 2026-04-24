@@ -1,0 +1,63 @@
+name: "mosaico-training"
+services:
+  database:
+    image: postgres:16
+    container_name: db-training
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mosaico
+    ports:
+      - "5432:5432"
+    volumes:
+      # Reuse the OLD devel postgres volume that has the 149 sequence catalog
+      - mosaico-repro_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  store:
+    image: minio/minio:latest
+    container_name: store-training
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      # Mount the existing 14GB ingested data from D:/mosaico-store
+      - D:/mosaico-store:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mosaicod:
+    image: ghcr.io/mosaico-labs/mosaicod
+    container_name: mosaicod-training
+    environment:
+      MOSAICOD_DB_URL: postgresql://postgres:password@database:5432/mosaico
+      MOSAICOD_STORE_ENDPOINT: http://store-training:9000
+      MOSAICOD_STORE_BUCKET: mosaico
+      MOSAICOD_STORE_ACCESS_KEY: admin
+      MOSAICOD_STORE_SECRET_KEY: password
+      RUST_LOG: mosaico=info
+    command: |
+      run --host 0.0.0.0
+    depends_on:
+      database:
+        condition: service_healthy
+      store:
+        condition: service_healthy
+    ports:
+      - "6726:6726"
+
+volumes:
+  # Reference the existing external volume
+  mosaico-repro_postgres_data:
+    external: true

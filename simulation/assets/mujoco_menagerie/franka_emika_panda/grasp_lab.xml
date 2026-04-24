@@ -1,0 +1,163 @@
+<!--
+  Grasp Integrity Predictor — Lab Workcell
+  Official Franka Emika Panda (MuJoCo Menagerie).
+  Module C demo / case study.
+-->
+<mujoco model="grasp_lab">
+  <include file="panda.xml"/>
+
+  <option timestep="0.002" gravity="0 0 -9.81"
+          cone="elliptic" impratio="10"/>
+
+  <statistic center="0.35 0 0.40" extent="1.2"/>
+
+  <visual>
+    <headlight diffuse="0.42 0.42 0.45" ambient="0.28 0.28 0.30" specular="0.08 0.08 0.08"/>
+    <rgba haze="0.04 0.05 0.08 1"/>
+    <quality shadowsize="4096" offsamples="8"/>
+    <map znear="0.005" zfar="50" force="0.05"/>
+    <global azimuth="150" elevation="-25"/>
+  </visual>
+
+  <asset>
+    <texture name="skybox" type="skybox" builtin="gradient"
+             rgb1="0.10 0.11 0.14" rgb2="0.04 0.05 0.07"
+             width="512" height="3072"/>
+
+    <material name="floor_mat" specular="0.05" shininess="0.05"
+              reflectance="0.02" rgba="0.16 0.17 0.19 1"/>
+
+    <texture name="alu_tex" type="2d" builtin="gradient"
+             rgb1="0.58 0.60 0.63" rgb2="0.50 0.52 0.55"
+             width="256" height="16"/>
+    <material name="alu_mat" texture="alu_tex" texrepeat="1 8"
+              specular="0.7" shininess="0.8" reflectance="0.12"/>
+
+    <material name="steel_mat" specular="0.3" shininess="0.4"
+              rgba="0.22 0.22 0.24 1"/>
+
+    <material name="cube_red" specular="0.5" shininess="0.4"
+              rgba="0.82 0.20 0.18 1"/>
+    <material name="sphere_blue" specular="0.55" shininess="0.55"
+              rgba="0.18 0.48 0.85 1"/>
+
+    <material name="zone_mat" specular="0.08" shininess="0.1"
+              rgba="0.12 0.12 0.14 1"/>
+    <material name="zone_edge" specular="0.4" shininess="0.3"
+              rgba="0.08 0.70 0.45 1"/>
+
+    <material name="yellow_safety" specular="0.3" shininess="0.3"
+              rgba="0.95 0.85 0.10 1"/>
+  </asset>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="4 4 0.05" material="floor_mat"
+          contype="1" conaffinity="1"/>
+
+    <light name="key_light" pos="0.8 -1.2 2.2" dir="-0.1 0.7 -1"
+           diffuse="0.55 0.54 0.52" specular="0.18 0.18 0.18"
+           castshadow="true" cutoff="55"/>
+    <light name="fill_light" pos="-0.8 0.8 1.8" dir="0.5 -0.4 -1"
+           diffuse="0.22 0.24 0.28" specular="0.04 0.04 0.04"
+           castshadow="false" cutoff="55"/>
+    <light name="rim_light" pos="0.0 1.6 1.2" dir="0 -1 0.1"
+           diffuse="0.18 0.18 0.22" specular="0.0 0.0 0.0"
+           castshadow="false"/>
+
+    <!-- ══════ WORKCELL TABLE ══════ -->
+    <body name="table" pos="0.5 0.0 0.0">
+      <geom name="table_top" type="box" size="0.40 0.55 0.015"
+            pos="0 0 0.40" material="alu_mat" mass="80"
+            contype="1" conaffinity="1" friction="0.8 0.005 0.001"/>
+      <geom type="box" size="0.02 0.02 0.19" pos="-0.36 -0.50 0.19" material="steel_mat"/>
+      <geom type="box" size="0.02 0.02 0.19" pos=" 0.36 -0.50 0.19" material="steel_mat"/>
+      <geom type="box" size="0.02 0.02 0.19" pos="-0.36  0.50 0.19" material="steel_mat"/>
+      <geom type="box" size="0.02 0.02 0.19" pos=" 0.36  0.50 0.19" material="steel_mat"/>
+      <geom type="box" size="0.36 0.015 0.015" pos="0 -0.50 0.06" material="steel_mat"/>
+      <geom type="box" size="0.36 0.015 0.015" pos="0  0.50 0.06" material="steel_mat"/>
+      <geom type="box" size="0.015 0.50 0.015" pos="-0.36 0 0.06" material="steel_mat"/>
+      <geom type="box" size="0.015 0.50 0.015" pos=" 0.36 0 0.06" material="steel_mat"/>
+      <geom name="alarm_strip_front" type="box" size="0.405 0.003 0.018"
+            pos="0 -0.555 0.40" material="yellow_safety"
+            contype="0" conaffinity="0"/>
+      <geom name="alarm_strip_back" type="box" size="0.405 0.003 0.018"
+            pos="0  0.555 0.40" material="yellow_safety"
+            contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- ══════ DROP ZONE ══════ -->
+    <body name="drop_zone" pos="0.50 0.32 0.416">
+      <geom name="zone_base" type="box" size="0.10 0.10 0.002"
+            material="zone_mat" mass="0.5" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.025 0.003 0.003" pos="-0.08  0.10 0" material="zone_edge" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.003 0.025 0.003" pos="-0.10  0.08 0" material="zone_edge" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.025 0.003 0.003" pos=" 0.08  0.10 0" material="zone_edge" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.003 0.025 0.003" pos=" 0.10  0.08 0" material="zone_edge" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.025 0.003 0.003" pos="-0.08 -0.10 0" material="zone_edge" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.003 0.025 0.003" pos="-0.10 -0.08 0" material="zone_edge" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.025 0.003 0.003" pos=" 0.08 -0.10 0" material="zone_edge" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.003 0.025 0.003" pos=" 0.10 -0.08 0" material="zone_edge" contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- ══════ GRASPABLE OBJECTS ══════ -->
+    <body name="cube_red" pos="0.50 -0.12 0.44">
+      <freejoint name="cube_red_free"/>
+      <geom name="cube_red_geom" type="box" size="0.022 0.022 0.022"
+            material="cube_red" mass="0.10"
+            condim="4" friction="2.5 0.015 0.003"
+            solref="0.008 1" solimp="0.95 0.99 0.001"
+            contype="1" conaffinity="1"/>
+    </body>
+
+    <body name="sphere_blue" pos="0.50 0.05 0.437">
+      <freejoint name="sphere_blue_free"/>
+      <geom name="sphere_blue_geom" type="sphere" size="0.022"
+            material="sphere_blue" mass="0.10"
+            condim="1" friction="0.001 0.0001 0.0001"
+            solref="0.008 1" solimp="0.95 0.99 0.001"
+            contype="1" conaffinity="1"/>
+    </body>
+  </worldbody>
+
+  <!--
+    Override contact friction for the BLUE SPHERE against each Panda
+    fingertip pad. MuJoCo combines per-geom friction by taking the MAX,
+    so the high-friction finger pads (mu~1) override the sphere's tiny
+    friction unless we declare an explicit pair with friction=0.
+    This makes the sphere the deliberate "low-grip" failure case while
+    the cube keeps the finger pads' default friction.
+  -->
+  <contact>
+    <pair geom1="sphere_blue_geom" geom2="left_pad1"  friction="0 0 0 0 0"/>
+    <pair geom1="sphere_blue_geom" geom2="left_pad2"  friction="0 0 0 0 0"/>
+    <pair geom1="sphere_blue_geom" geom2="left_pad3"  friction="0 0 0 0 0"/>
+    <pair geom1="sphere_blue_geom" geom2="left_pad4"  friction="0 0 0 0 0"/>
+    <pair geom1="sphere_blue_geom" geom2="left_pad5"  friction="0 0 0 0 0"/>
+    <pair geom1="sphere_blue_geom" geom2="right_pad1" friction="0 0 0 0 0"/>
+    <pair geom1="sphere_blue_geom" geom2="right_pad2" friction="0 0 0 0 0"/>
+    <pair geom1="sphere_blue_geom" geom2="right_pad3" friction="0 0 0 0 0"/>
+    <pair geom1="sphere_blue_geom" geom2="right_pad4" friction="0 0 0 0 0"/>
+    <pair geom1="sphere_blue_geom" geom2="right_pad5" friction="0 0 0 0 0"/>
+  </contact>
+
+  <sensor>
+    <jointactuatorfrc name="torque_j1" joint="joint1"/>
+    <jointactuatorfrc name="torque_j2" joint="joint2"/>
+    <jointactuatorfrc name="torque_j3" joint="joint3"/>
+    <jointactuatorfrc name="torque_j4" joint="joint4"/>
+    <jointactuatorfrc name="torque_j5" joint="joint5"/>
+    <jointactuatorfrc name="torque_j6" joint="joint6"/>
+    <jointactuatorfrc name="torque_j7" joint="joint7"/>
+    <framepos name="ee_pos" objtype="site" objname="end_effector"/>
+    <jointactuatorfrc name="force_finger1" joint="finger_joint1"/>
+    <jointactuatorfrc name="force_finger2" joint="finger_joint2"/>
+  </sensor>
+
+  <keyframe>
+    <key name="lab_home"
+         qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0.04 0.04
+               0.50 -0.12 0.44  1 0 0 0
+               0.50  0.05 0.437 1 0 0 0"
+         ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 255"/>
+  </keyframe>
+</mujoco>
