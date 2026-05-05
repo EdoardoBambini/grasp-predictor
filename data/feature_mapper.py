@@ -1,15 +1,23 @@
 """
 Projects dataset-specific DataFrameExtractor outputs onto a single canonical
-8-dim schema (ee xyz + quaternion + gripper scalar).
+8-dim base schema (ee xyz + quaternion xyzw + gripper scalar) plus 7
+finite-difference derivatives = 15 EXTENDED_FEATURES, fed to the LSTM kin
+stream.
 
-These 8 are the only features shared across all 4 source formats (HDF5
-Reassemble, parquet DROID, ROS bag MML, TFRecord RT1). Tactile and effort
-live in one or two datasets only, so they'd break the cross-dataset bridge.
+These 8 base features are the lowest common denominator across the three
+source formats (HDF5 Reassemble, h5 ROS bag like DROID, TFRecord Fractal
+RT-1). Tactile and joint effort live in one dataset only; including them
+would break the cross-dataset bridge.
+
+Also exposes optional RGB image topics per dataset (multimodal path). The
+image ingest is lazy: raw JPEG bytes travel through the sync stage as
+object columns, decoding happens once during the CNN pre-cache.
 """
 from __future__ import annotations
 
+import io
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -54,6 +62,66 @@ TOPICS_PER_DATASET: Dict[str, List[str]] = {
         "/step/is_terminal",
     ],
 }
+
+# Optional RGB image topic per dataset (multimodal path). None means the
+# dataset has no RGB available and goes through kinematic-only. The exact
+# topic names must match what the Mosaico plugin publishes at ingest time.
+# Reassemble: confirmed empirically after re-ingest with unpatched plugin.
+# DROID:      3 cameras available; wrist_left picked because it tracks the
+#             grasp point through the whole trajectory with minimal occlusion.
+# Fractal:    single image topic from the RLDS parser.
+# MML:        no RGB in the ROS bag (only tactile+audio), kept None.
+IMAGE_TOPIC_PER_DATASET: Dict[str, Optional[str]] = {
+    "reassemble":  "/hand",
+    "droid":       "/observation/images/wrist_left",
+    "mml":         None,
+    "fractal_rt1": "/step/observation/image",
+}
+
+# Target resolution for CNN input. 112 keeps per-window memory reasonable
+# (50 * 3 * 112 * 112 uint8 = 1.88 MB per window) and works well with
+# MobileNetV3-small.
+IMAGE_TARGET_HW: Tuple[int, int] = (112, 112)
+
+# ImageNet normalization constants (backbone is pretrained).
+IMAGENET_MEAN: Tuple[float, float, float] = (0.485, 0.456, 0.406)
+IMAGENET_STD:  Tuple[float, float, float] = (0.229, 0.224, 0.225)
+
+# Per-dataset thresholds for canonicalizing gripper_state to a binary {0, 1}
+# signal. Each dataset records the gripper on an incompatible scale
+# (Reassemble: Franka finger position in meters, range 0..0.04; DROID:
+# normalized [0,1], bimodal at 0 and 1; Fractal: already quasi binary 0/1).
+# Without this binarization gripper_state and gripper_vel encode dataset
+# identity, leaking through the cross-dataset bridge.
+# Thresholds calibrated from histogram analysis of results/audit_cache.json.
+#
+# Convention: 1.0 = "open" (high raw value), 0.0 = "closed" (low raw value).
+# The bimodal nature of the raw signals makes the binary projection a
+# faithful summary of the underlying control mode in each format.
+GRIPPER_THRESHOLD_PER_DATASET: Dict[str, float] = {
+    "reassemble":  0.025,  # Franka 2-finger position (meters); range 0..0.04, midpoint
+    "droid":       0.5,    # normalized [0,1] bimodal at 0 and 1
+    "fractal_rt1": 0.5,    # already quasi-binary; clip to {0,1}
+    "mml":         0.5,    # Allegro mean; kept for API symmetry, not used in current pipeline
+}
+
+
+def _binarize_gripper(values: np.ndarray, dsid: str) -> np.ndarray:
+    """Apply the per-dataset threshold defined in GRIPPER_THRESHOLD_PER_DATASET.
+    NaN values are preserved as NaN (downstream NaN-row drop in
+    cross_dataset_ingestor handles them); finite values are mapped to {0.0, 1.0}.
+    """
+    if dsid not in GRIPPER_THRESHOLD_PER_DATASET:
+        raise ValueError(
+            f"No gripper threshold defined for dataset {dsid!r}. "
+            f"Known: {list(GRIPPER_THRESHOLD_PER_DATASET.keys())}"
+        )
+    thr = GRIPPER_THRESHOLD_PER_DATASET[dsid]
+    arr = np.asarray(values, dtype=np.float32)
+    out = np.full_like(arr, np.nan, dtype=np.float32)
+    finite = np.isfinite(arr)
+    out[finite] = (arr[finite] > thr).astype(np.float32)
+    return out
 
 # Mosaico exposes the Pose ontology as <topic>.pose.position.{x,y,z}
 # and <topic>.pose.orientation.{x,y,z,w}.
@@ -118,7 +186,8 @@ def project_reassemble(df: pd.DataFrame) -> pd.DataFrame:
 
     grip_col = "/robot_state/end_effector.end_effector.positions"
     if grip_col in df.columns:
-        out["gripper_state"] = _mean_of_array_col(df[grip_col])
+        raw = _mean_of_array_col(df[grip_col])
+        out["gripper_state"] = _binarize_gripper(raw, "reassemble")
     else:
         out["gripper_state"] = np.nan
     return out
@@ -138,7 +207,8 @@ def project_droid(df: pd.DataFrame) -> pd.DataFrame:
 
     grip_col = "/observation/state/gripper_position.end_effector.positions"
     if grip_col in df.columns:
-        out["gripper_state"] = _first_of_array_col(df[grip_col])
+        raw = _first_of_array_col(df[grip_col])
+        out["gripper_state"] = _binarize_gripper(raw, "droid")
     else:
         out["gripper_state"] = np.nan
     return out
@@ -159,7 +229,8 @@ def project_mml(df: pd.DataFrame) -> pd.DataFrame:
 
     grip_col = "/allegro_hand_right/joint_states.robot_joint.positions"
     if grip_col in df.columns:
-        out["gripper_state"] = _mean_of_array_col(df[grip_col])
+        raw = _mean_of_array_col(df[grip_col])
+        out["gripper_state"] = _binarize_gripper(raw, "mml")
     else:
         out["gripper_state"] = np.nan
     return out
@@ -180,7 +251,8 @@ def project_fractal_rt1(df: pd.DataFrame) -> pd.DataFrame:
 
     grip_col = "/step/observation/gripper_closed.floating32.data"
     if grip_col in df.columns:
-        out["gripper_state"] = pd.to_numeric(df[grip_col], errors="coerce").astype(np.float32)
+        raw = pd.to_numeric(df[grip_col], errors="coerce").to_numpy(dtype=np.float32)
+        out["gripper_state"] = _binarize_gripper(raw, "fractal_rt1")
     else:
         out["gripper_state"] = np.nan
     return out
@@ -231,10 +303,54 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     out["ee_vel_x"] = _fd(out["ee_pos_x"])
     out["ee_vel_y"] = _fd(out["ee_pos_y"])
     out["ee_vel_z"] = _fd(out["ee_pos_z"])
-    # Not real angular velocity (would need 2 * q_dot * q_conjugate), just a
-    # cheap proxy for rotation rate — good enough for a classifier.
+    # Cheap proxy for rotation rate (not true angular velocity, which would
+    # require 2 * q_dot * q_conjugate). Sufficient signal for a classifier.
     out["ee_rot_vel_x"] = _fd(out["ee_rot_qx"])
     out["ee_rot_vel_y"] = _fd(out["ee_rot_qy"])
     out["ee_rot_vel_z"] = _fd(out["ee_rot_qz"])
     out["gripper_vel"] = _fd(out["gripper_state"])
     return out
+
+
+# ----------------------------------------------------------------------------
+# Image extraction helpers (multimodal path)
+# ----------------------------------------------------------------------------
+
+def image_column_name(topic: str) -> str:
+    """The column where DataFrameExtractor lands CompressedImage.data bytes.
+    The Mosaico CompressedImage ontology projects to
+    `<topic>.compressed_image.{data,format,frame_id,...}` after
+    DataFrameExtractor + SyncTransformer."""
+    return f"{topic}.compressed_image.data"
+
+
+def decode_jpeg_to_chw(
+    jpeg_bytes: Optional[bytes], target_hw: Tuple[int, int] = IMAGE_TARGET_HW,
+) -> np.ndarray:
+    """Decode one CompressedImage payload to a (3, H, W) uint8 tensor.
+    Returns a zero frame if bytes are None/empty (placeholder that the
+    model can mask downstream via a has_image flag)."""
+    from PIL import Image  # lazy import, Pillow only needed for multimodal
+
+    H, W = target_hw
+    if jpeg_bytes is None or (hasattr(jpeg_bytes, "__len__") and len(jpeg_bytes) == 0):
+        return np.zeros((3, H, W), dtype=np.uint8)
+    try:
+        img = Image.open(io.BytesIO(jpeg_bytes)).convert("RGB").resize((W, H), Image.BILINEAR)
+    except Exception:
+        return np.zeros((3, H, W), dtype=np.uint8)
+    arr = np.asarray(img, dtype=np.uint8)           # (H, W, 3)
+    return np.transpose(arr, (2, 0, 1))             # (3, H, W)
+
+
+def extract_image_series(
+    df: pd.DataFrame, image_topic: Optional[str],
+) -> Optional[pd.Series]:
+    """Return the object-dtype Series of JPEG bytes aligned to df rows, or
+    None if the dataset has no image topic or the column is missing."""
+    if image_topic is None:
+        return None
+    col = image_column_name(image_topic)
+    if col not in df.columns:
+        return None
+    return df[col]

@@ -39,7 +39,7 @@
     <material name="cube_red" specular="0.5" shininess="0.4"
               rgba="0.82 0.20 0.18 1"/>
     <material name="sphere_blue" specular="0.55" shininess="0.55"
-              rgba="0.18 0.48 0.85 1"/>
+              rgba="0.18 0.48 0.85 0"/>
 
     <material name="zone_mat" specular="0.08" shininess="0.1"
               rgba="0.12 0.12 0.14 1"/>
@@ -115,7 +115,7 @@
             material="sphere_blue" mass="0.10"
             condim="1" friction="0.001 0.0001 0.0001"
             solref="0.008 1" solimp="0.95 0.99 0.001"
-            contype="1" conaffinity="1"/>
+            contype="0" conaffinity="0"/>
     </body>
   </worldbody>
 

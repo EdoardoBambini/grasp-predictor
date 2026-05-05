@@ -1,16 +1,20 @@
 """
 Rebuild the mosaicod PostgreSQL catalog from existing MinIO blob data.
 
-Reads manifest xl.meta files and parquet metadata from D:/mosaico-store
-and inserts the corresponding entries into sequence_t, session_t, topic_t,
-chunk_t so that mosaicod can serve the data without re-ingestion.
+Reads manifest xl.meta files and parquet metadata from the MinIO store and
+inserts the corresponding entries into sequence_t, session_t, topic_t,
+chunk_t so that mosaicod can serve the data without re-ingestion. Used
+when the catalog DB is wiped but the blob store on disk is intact.
 
 Usage:
     python scripts/rebuild_catalog.py
+    python scripts/rebuild_catalog.py \
+        --store-root "D:/mosaico-store/mosaico" \
+        --dsn "postgresql://postgres:password@localhost:5432/mosaico"
 """
+import argparse
 import json
 import logging
-import os
 import uuid
 from pathlib import Path
 
@@ -23,9 +27,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("rebuild_catalog")
-
-STORE_ROOT = Path("D:/mosaico-store/mosaico")
-DB_DSN = "postgresql://postgres:password@localhost:5432/mosaico"
 
 
 def extract_json_from_xlmeta(path: Path) -> dict | None:
@@ -73,7 +74,17 @@ def get_data_file_name(topic_dir: Path) -> str | None:
 
 
 def main():
-    conn = psycopg2.connect(DB_DSN)
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--store-root", default="D:/mosaico-store/mosaico",
+                        help="MinIO store root containing per-sequence dirs")
+    parser.add_argument("--dsn", default="postgresql://postgres:password@localhost:5432/mosaico",
+                        help="Postgres DSN for the mosaicod catalog DB")
+    args = parser.parse_args()
+
+    store_root = Path(args.store_root)
+
+    conn = psycopg2.connect(args.dsn)
     conn.autocommit = False
     cur = conn.cursor()
 
@@ -96,7 +107,7 @@ def main():
     conn.commit()
 
     sequence_dirs = sorted(
-        [d for d in STORE_ROOT.iterdir() if d.is_dir() and d.name.startswith("reassemble_")]
+        [d for d in store_root.iterdir() if d.is_dir() and d.name.startswith("reassemble_")]
     )
     log.info("Found %d sequence directories", len(sequence_dirs))
 

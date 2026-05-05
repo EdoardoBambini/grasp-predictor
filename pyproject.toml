@@ -1,40 +1,35 @@
 [tool.poetry]
 name = "grasp-integrity-predictor"
-version = "0.1.0"
-description = "Binary failure classifier for robotic grasp integrity using Mosaico SDK and PyTorch"
+version = "1.0.0"
+description = "Binary grasp failure classifier and closed loop MuJoCo demo, case study for the Mosaico Labs Physical AI Bridge"
 authors = []
 readme = "README.md"
-packages = [{ include = "grasp_integrity_predictor" }]
 
 [tool.poetry.dependencies]
 python = ">=3.13,<4"
 
-# Mosaico SDK (local development install)
-mosaicolabs = { path = "../../mosaico-marco/mosaico-sdk-py", develop = true }
+# Mosaico SDK (local editable install)
+mosaicolabs = { path = "../mosaico-sdk-py", develop = true }
 
-# ML stack
+# Core ML stack
 torch = ">=2.2.0"
+torchvision = ">=0.17.0"          # MobileNetV3 Small backbone for the CNN pre-cache
 numpy = ">=2.0.0"
 pandas = ">=2.0.0"
-scikit-learn = ">=1.4.0"
+scikit-learn = ">=1.4.0"          # IncrementalPCA, ROC, F1, stratified split
+Pillow = ">=10.0.0"               # JPEG decode in feature_mapper
 
-# Time series model: tsai (timeseriesAI/tsai on GitHub)
-# LSTMPlus: production LSTM for time series classification
-# https://github.com/timeseriesAI/tsai
-tsai = ">=0.3.9"
+# Closed loop demo and plotting
+mujoco = ">=3.6.0"                # Franka Panda scene + offscreen renderer
+opencv-python = ">=4.8.0"         # HUD overlay + VideoWriter
+matplotlib = ">=3.8.0"
+seaborn = ">=0.13.0"
 
-# Config management
-hydra-core = ">=1.3.0"
-omegaconf = ">=2.3.0"
-
-# Simulation
-mujoco = ">=3.0.0"
-
-# Validation
-pydantic = ">=2.0.0"
-
-# Utilities
-pyarrow = ">=22.0.0"
+# Ingestion utilities
+h5py = ">=3.10.0"                 # Reassemble label backfill
+psycopg2-binary = ">=2.9.0"       # catalog rebuild
+pyarrow = ">=22.0.0"              # catalog rebuild + parquet metadata
+rich = ">=13.0.0"                 # multiprocess ingest console
 tqdm = ">=4.66.0"
 
 [tool.poetry.group.dev.dependencies]

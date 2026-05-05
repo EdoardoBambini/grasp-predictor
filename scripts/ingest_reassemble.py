@@ -1,8 +1,8 @@
 """
-Ingest all 149 Reassemble .h5 sequences into mosaicod.
+Ingest the Reassemble .h5 sequences into mosaicod.
 
-Uses a ManipulationRunner fork with the ReassemblePlugin.
-Only robot_state topics (no video/audio/events), fast ingestion.
+Uses ManipulationRunner with the ReassemblePlugin from the Mosaico SDK.
+Only robot_state topics (no video / audio / events), so ingestion is fast.
 
 Usage:
     python scripts/ingest_reassemble.py

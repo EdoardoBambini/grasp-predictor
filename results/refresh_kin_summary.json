@@ -1,0 +1,33 @@
+{
+  "reassemble": {
+    "ok": 48,
+    "skip": 0,
+    "fail": 0,
+    "mismatch": 0,
+    "empty": 0,
+    "n_total": 48,
+    "elapsed_sec": 495.3
+  },
+  "droid": {
+    "ok": 1481,
+    "skip": 0,
+    "fail": 0,
+    "mismatch": 2,
+    "empty": 0,
+    "n_total": 1483,
+    "elapsed_sec": 1143.5
+  },
+  "fractal_rt1": {
+    "ok": 874,
+    "skip": 0,
+    "fail": 0,
+    "mismatch": 0,
+    "empty": 0,
+    "n_total": 874,
+    "elapsed_sec": 692.5
+  },
+  "_grand_total": {
+    "elapsed_sec": 2331.4,
+    "elapsed_h": 0.65
+  }
+}

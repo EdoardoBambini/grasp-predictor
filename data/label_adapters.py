@@ -1,8 +1,9 @@
 """
 Per-dataset label adapters: each one returns a grasp_failure Series
-(0=success, 1=failure) aligned to the df timestamps. All 4 work on data
-already pulled via Mosaico (no h5/parquet/bag side-cars). Reassemble labels
-come from /grasp_failure_label (populated by backfill_reassemble_labels.py).
+(0=success, 1=failure) aligned to the df timestamps. All adapters work on
+data already pulled via Mosaico (no h5 / parquet / bag side-cars). Reassemble
+labels come from /grasp_failure_label (populated by either the patched
+ingestion plugin or scripts/backfill_reassemble_labels.py).
 """
 from __future__ import annotations
 
@@ -23,29 +24,55 @@ def _empty_label(df: pd.DataFrame, value: int = 0) -> pd.Series:
 
 
 def label_reassemble(df: pd.DataFrame, seq_handler) -> pd.Series:
-    """Label from /grasp_failure_label (built from segments_info in the h5)."""
-    # The ".boolean.data" suffix is DataFrameExtractor's naming convention
-    # for Boolean-ontology topics; older backfills used ".data".
-    col_candidates = [
+    """Label from /grasp_failure_label (built from segments_info in the h5).
+
+    Supports two ingestion schemas:
+
+    1) Boolean ontology (current cache, populated by the legacy Reassemble
+       plugin or scripts/backfill_reassemble_labels.py): columns
+       /grasp_failure_label.boolean.data or /grasp_failure_label.data, value
+       interpreted as 1=failure, 0=success.
+
+    2) SegmentInfo ontology (new alchemy plugin, post mosaico-alchemy PR for
+       SegmentInfo): column /grasp_failure_label.segment_info.success, value
+       interpreted as 1=success, 0=failure (polarity inverted vs Boolean).
+
+    Schema 1 is checked first for backwards compatibility with the existing
+    cache. Schema 2 takes over automatically once Reassemble is re-ingested
+    with the new plugin.
+    """
+    # Schema 1: legacy Boolean ontology.
+    bool_candidates = [
         "/grasp_failure_label.boolean.data",
         "/grasp_failure_label.data",
     ]
-    col = next((c for c in col_candidates if c in df.columns), None)
-    if col is None:
-        # Fall back to success rather than crashing: lets training skip past
-        # incomplete sequences without losing the whole run.
-        logger.warning(
-            "Reassemble label topic column not found in df. "
-            "Run scripts/backfill_reassemble_labels.py to populate it. Falling back to success."
-        )
-        return _empty_label(df, value=0)
-    v = df[col]
-    # ffill covers gaps SyncHold misses at sparse boundaries;
-    # bfill covers samples that precede the first label record.
-    v = v.ffill().bfill()
-    labels = (v.astype(float) > 0.5).astype(np.float32)
-    labels.name = LABEL_COL
-    return labels
+    bool_col = next((c for c in bool_candidates if c in df.columns), None)
+    if bool_col is not None:
+        v = df[bool_col].ffill().bfill()
+        labels = (v.astype(float) > 0.5).astype(np.float32)
+        labels.name = LABEL_COL
+        return labels
+
+    # Schema 2: SegmentInfo ontology. The `success` field carries the outcome
+    # flag with inverted polarity (success=True means not-a-failure), so the
+    # failure label is the boolean complement.
+    seg_col = "/grasp_failure_label.segment_info.success"
+    if seg_col in df.columns:
+        v = df[seg_col].ffill().bfill()
+        success = v.astype(float)
+        labels = (1.0 - (success > 0.5).astype(np.float32)).astype(np.float32)
+        labels.name = LABEL_COL
+        return labels
+
+    # Neither schema present: fall back to success rather than crashing, so a
+    # training run can skip past incomplete sequences without losing the rest.
+    logger.warning(
+        "Reassemble label topic column not found in df. "
+        "Expected /grasp_failure_label.boolean.data (legacy) or "
+        "/grasp_failure_label.segment_info.success (new alchemy plugin). "
+        "Falling back to success."
+    )
+    return _empty_label(df, value=0)
 
 
 def label_droid(df: pd.DataFrame, seq_handler) -> pd.Series:
@@ -61,8 +88,8 @@ def label_droid(df: pd.DataFrame, seq_handler) -> pd.Series:
 
 def label_mml(df: pd.DataFrame, seq_handler) -> pd.Series:
     """MML -> teleop demos, no failure annotation. Everything is labeled
-    success. Known label noise — MML only contributes domain coverage."""
-    # TODO: Tekscan pressure or IIWA joint effort could infer failures.
+    success (label noise is intentional; MML only contributes domain coverage
+    when included)."""
     return _empty_label(df, value=0)
 
 
@@ -90,8 +117,8 @@ def label_fractal_rt1(df: pd.DataFrame, seq_handler) -> pd.Series:
     else:
         final_reward = float(reward.iloc[-1]) if len(reward) else 0.0
 
-    # Episode-level: same label on every sample. Can't tell WHEN the failure
-    # started, only that the episode ended badly.
+    # Episode-level supervision: same label on every sample. The exact
+    # frame at which the failure started is not annotated.
     failure = 0 if final_reward > 0 else 1
     return _empty_label(df, value=failure)
 

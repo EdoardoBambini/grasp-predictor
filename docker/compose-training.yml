@@ -1,4 +1,7 @@
 name: "mosaico-training"
+# LOCAL DEVELOPMENT STACK ONLY. Credentials below are placeholder defaults
+# (postgres / minio / mosaicod local trio). Replace with real secrets for any
+# non-local deployment.
 services:
   database:
     image: postgres:16
@@ -10,7 +13,8 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      # Reuse the OLD devel postgres volume that has the 149 sequence catalog
+      # Mounts an external named volume so the catalog persists across
+      # container restarts. Create it once with: docker volume create mosaico-repro_postgres_data
       - mosaico-repro_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -29,7 +33,7 @@ services:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      # Mount the existing 14GB ingested data from D:/mosaico-store
+      # Host path for the MinIO blob store. Override to match the local data drive.
       - D:/mosaico-store:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]

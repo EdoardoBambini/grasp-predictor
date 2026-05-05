@@ -1,11 +1,14 @@
 """
-Parallel re-ingestion of Reassemble dataset via mosaicod.
+Parallel re-ingestion of the Reassemble dataset via mosaicod.
 
-Splits the 149 sequences across N worker processes, each with its own
-MosaicoClient connection.  Every worker refreshes the existing-sequence
+Splits the .h5 sequences across N worker processes, each with its own
+MosaicoClient connection. Every worker refreshes the existing-sequence
 list before starting a new file, so concurrent workers never duplicate work.
 
-Usage: py -3.13 run_ingestion_parallel.py [--workers 4]
+Usage:
+    py -3.13 run_ingestion_parallel.py
+    py -3.13 run_ingestion_parallel.py --workers 4 \\
+        --dataset-root "D:/datasets/reassemble/data"
 """
 
 from __future__ import annotations
@@ -16,14 +19,9 @@ import multiprocessing as mp
 import time
 from pathlib import Path
 
-DATASET_ROOT = Path("D:/datasets/reassemble/data")
-MOSAICOD_HOST = "localhost"
-MOSAICOD_PORT = 6726
 
-
-def worker(worker_id: int, file_paths: list[Path]) -> dict:
+def worker(worker_id: int, file_paths: list[Path], host: str, port: int) -> dict:
     """Ingest a slice of sequences."""
-    # configure per-process logging
     logging.basicConfig(
         level=logging.INFO,
         format=f"%(asctime)s W{worker_id} %(levelname)-8s %(message)s",
@@ -45,7 +43,7 @@ def worker(worker_id: int, file_paths: list[Path]) -> dict:
     plugin = ReassembleTrainingPlugin()
     console = Console(stderr=True)
     executor = FileSequenceExecutor(console)
-    client = MosaicoClient.connect(MOSAICOD_HOST, MOSAICOD_PORT)
+    client = MosaicoClient.connect(host, port)
     log.info("Connected, assigned %d files", len(file_paths))
 
     ingested = 0
@@ -85,8 +83,13 @@ def worker(worker_id: int, file_paths: list[Path]) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--dataset-root", default="D:/datasets/reassemble/data",
+                        help="Reassemble .h5 root directory")
+    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--port", type=int, default=6726)
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -100,7 +103,7 @@ def main() -> None:
         ReassembleTrainingPlugin,
     )
     plugin = ReassembleTrainingPlugin()
-    all_paths = plugin.discover_sequences(DATASET_ROOT)
+    all_paths = plugin.discover_sequences(Path(args.dataset_root))
     log.info("Discovered %d h5 files, launching %d workers", len(all_paths), args.workers)
 
     chunks: list[list[Path]] = [[] for _ in range(args.workers)]
@@ -109,7 +112,10 @@ def main() -> None:
 
     t0 = time.time()
     with mp.Pool(args.workers) as pool:
-        results = pool.starmap(worker, [(wid, chunk) for wid, chunk in enumerate(chunks)])
+        results = pool.starmap(
+            worker,
+            [(wid, chunk, args.host, args.port) for wid, chunk in enumerate(chunks)],
+        )
 
     total_time = time.time() - t0
     total_ingested = sum(r["ingested"] for r in results)

@@ -1,8 +1,10 @@
 """
-Cross-dataset ingestor. For each of the 4 Mosaico-ingested datasets
-(reassemble, droid, mml, fractal_rt1) pulls the sequences, syncs them at
-50Hz (SyncHold), projects them onto the canonical 8-feature schema and
-attaches the grasp_failure label. Only Mosaico SDK, no direct h5/parquet/bag.
+Cross-dataset ingestor. For each Mosaico-ingested dataset (reassemble, droid,
+fractal_rt1; mml is supported as a label adapter but not used in the released
+pipeline) pulls the sequences via the SDK, syncs them at 50 Hz (SyncHold),
+projects them onto the canonical 8-feature schema (extended to 15 with the
+finite-difference derivatives) and attaches the grasp_failure label. Only
+Mosaico SDK, no direct h5 / TFRecord / bag reads.
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ DEFAULT_WINDOW_SEC = 5.0
 
 
 class CrossDatasetIngestor:
-    """Pulls sequences from Mosaico for all 4 datasets and yields labeled canonical DataFrames."""
+    """Pulls sequences from Mosaico for the configured datasets and yields labeled canonical DataFrames."""
 
     def __init__(
         self,
@@ -76,9 +78,15 @@ class CrossDatasetIngestor:
         return sorted([it.sequence.name for it in resp])
 
     def process_sequence(
-        self, dsid: str, seq_name: str
+        self, dsid: str, seq_name: str, include_images: bool = False,
     ) -> Optional[pd.DataFrame]:
-        """Pull + sync + project + label for a single sequence."""
+        """Pull + sync + project + label for a single sequence.
+
+        When include_images=True the dense DataFrame also carries the raw
+        JPEG bytes of the image topic in an object column (see
+        feature_mapper.image_column_name). Decoding is deferred to the
+        caller (precompute_cnn_features.py uses feature_mapper.decode_jpeg_to_chw
+        frame-by-frame) so the dense df never holds decoded frames."""
         assert self._client is not None
         h = self._client.sequence_handler(seq_name)
         if h is None:
@@ -89,7 +97,14 @@ class CrossDatasetIngestor:
             # Topics can differ between sequences of the same dataset, so
             # intersect the requested list with what's actually present.
             available = set(h.topics)
-            wanted = feature_mapper.TOPICS_PER_DATASET[dsid]
+            wanted = list(feature_mapper.TOPICS_PER_DATASET[dsid])
+            if include_images:
+                img_topic = feature_mapper.IMAGE_TOPIC_PER_DATASET.get(dsid)
+                if img_topic and img_topic in available:
+                    wanted.append(img_topic)
+                elif img_topic:
+                    logger.warning("[%s] %s: image topic %s not present, kinematic only",
+                                   dsid, seq_name, img_topic)
             topics = [t for t in wanted if t in available]
             if not topics:
                 logger.warning("[%s] %s: no requested topics available; skipping", dsid, seq_name)
@@ -97,27 +112,29 @@ class CrossDatasetIngestor:
 
             ex = DataFrameExtractor(h)
             # SyncHold (forward-fill) is safe on bool/float/arrays; interp would
-            # break quaternions.
+            # break quaternions. Object columns (bytes for CompressedImage) are
+            # carried verbatim by ffill.
+            # Streaming pattern as documented by the SDK: build the
+            # SyncTransformer once, then transform each chunk in turn so the
+            # internal state carries values across chunk boundaries. The
+            # earlier ``concat + fit_transform`` workaround was here to dodge
+            # an ndim bug in ``_prepare_data`` that has since been patched.
             sync = SyncTransformer(target_fps=self._fps, policy=SyncHold())
 
-            # Workaround: sync.transform() chunk-by-chunk breaks on columns with
-            # ndarray cells (droid/mml joint_states). Accumulate sparse chunks,
-            # concat, then a single fit_transform on the whole thing.
-            sparse_parts: List[pd.DataFrame] = []
+            dense_parts: List[pd.DataFrame] = []
             for sparse in ex.to_pandas_chunks(topics=topics, window_sec=self._window_sec):
                 if sparse is None or sparse.empty:
                     continue
-                sparse_parts.append(sparse)
+                dense_chunk = sync.transform(sparse)
+                if dense_chunk is None or dense_chunk.empty:
+                    continue
+                dense_parts.append(dense_chunk)
 
-            if not sparse_parts:
-                logger.warning("[%s] %s: empty from extractor", dsid, seq_name)
-                return None
-
-            sparse_all = pd.concat(sparse_parts, ignore_index=True)
-            dense = sync.fit_transform(sparse_all)
-            if dense is None or dense.empty:
+            if not dense_parts:
                 logger.warning("[%s] %s: empty after sync", dsid, seq_name)
                 return None
+
+            dense = pd.concat(dense_parts, ignore_index=True)
 
             # Label BEFORE projection: /step/reward, /step/is_terminal and
             # /grasp_failure_label need to be still in the dense df.
@@ -125,6 +142,13 @@ class CrossDatasetIngestor:
 
             projected = feature_mapper.project(dsid, dense)
             projected[label_adapters.LABEL_COL] = dense[label_adapters.LABEL_COL].values
+
+            # Carry image bytes forward as an object column if requested.
+            if include_images:
+                img_topic = feature_mapper.IMAGE_TOPIC_PER_DATASET.get(dsid)
+                img_series = feature_mapper.extract_image_series(dense, img_topic)
+                if img_series is not None:
+                    projected[feature_mapper.image_column_name(img_topic)] = img_series.values
 
             # Drop NaN rows first (sync edges), otherwise finite-diff pollutes
             # the whole sequence with zeros.

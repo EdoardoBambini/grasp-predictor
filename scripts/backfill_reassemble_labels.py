@@ -2,15 +2,23 @@
 One-time backfill: copy `segments_info` from each Reassemble .h5 into Mosaico
 as a new topic `grasp_failure_label` (Boolean, 1=failure, 0=success).
 
-Reason: the ReassemblePlugin does not persist segments_info in sequence_metadata.
-After running this script, training can pull labels via MosaicoClient only,
-the .h5 side-car is never touched from the training pipeline.
+The ReassemblePlugin does not persist segments_info in sequence_metadata.
+After running this script the training pipeline pulls labels via MosaicoClient
+only; the .h5 side-car is never touched from training.
+
+Only needed for catalogs populated by the unpatched plugin: the patched plugin
+(see README) emits the label topic inline at ingest time.
 
 Idempotent: skips sequences that already have `/grasp_failure_label`.
-Run: python scripts/backfill_reassemble_labels.py
+
+Usage:
+    python scripts/backfill_reassemble_labels.py
+    python scripts/backfill_reassemble_labels.py \
+        --h5-root "D:/datasets/reassemble/data" --host 127.0.0.1 --port 6726
 """
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -21,10 +29,7 @@ from mosaicolabs import Boolean, Message, MosaicoClient
 from mosaicolabs.models.platform import Sequence
 from mosaicolabs.models.query import QuerySequence
 
-HOST = "127.0.0.1"
-PORT = 6726
 TOPIC = "/grasp_failure_label"
-H5_ROOT = Path("D:/datasets/reassemble/data")
 
 
 def read_segments_from_h5(h5_path: Path) -> list[dict]:
@@ -89,8 +94,18 @@ def push_labels(updater, segments: list[dict]) -> int:
 
 
 def main() -> int:
-    client = MosaicoClient.connect(host=HOST, port=PORT)
-    print(f"Connected to mosaicod @ {HOST}:{PORT}")
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--h5-root", default="D:/datasets/reassemble/data",
+                        help="directory containing the original Reassemble .h5 files")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=6726)
+    args = parser.parse_args()
+
+    h5_root = Path(args.h5_root)
+
+    client = MosaicoClient.connect(host=args.host, port=args.port)
+    print(f"Connected to mosaicod @ {args.host}:{args.port}")
 
     q = QuerySequence().with_expression(Sequence.Q.user_metadata["dataset_id"].eq("reassemble"))
     resp = client.query(q)
@@ -117,7 +132,7 @@ def main() -> int:
             n_fail += 1
             continue
 
-        h5_path = H5_ROOT / source_file
+        h5_path = h5_root / source_file
         if not h5_path.exists():
             print(f"[{i}] SKIP {name}: {h5_path} not found")
             h.close()
