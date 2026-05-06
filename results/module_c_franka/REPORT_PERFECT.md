@@ -26,7 +26,7 @@ Per ogni atto:
 | **Source state logging** | `kin[offset, 0:8]` (ee_pos, ee_quat, gripper binarized) della sequenza source viene loggato nel run log come metadata data-driven (Module C trace). |
 | **Physics-based grasp** | Il cubo a `cube_pos_xml = (0.50, -0.12, 0.44)` viene afferrato dalle pinze MuJoCo (`grip_close=50`, `friction=2.5`); niente anchor — la fisica gestisce grasp/lift. |
 | **Classifier P real-time** | `kin[offset:offset+50+t]` e `cnn` equivalente passano al modello frame-by-frame, sliding window 50, stride 1. Il classifier **non vede** il rendering MuJoCo. |
-| **Failure passive (atto 2)** | `cube_fail_script(slip_at = (fail_onset - offset) * 0.02s)` apre il gripper a `t_fail`. Cubo cade per gravità. Robot continua transport ignaro (passive). |
+| **Failure passive (atto 2)** | Pre-compute della P trace; `t_release = primo frame in cui P ≥ 0.70 per 3 frame consecutivi`. Il `cube_fail_script(slip_at=t_release)` apre il gripper a quell'istante. Cubo cade per gravità. Robot continua transport ignaro. **Visivo sincronizzato col model awareness**, non con un fail_onset arbitrario. |
 | **Failure active (atto 4)** | `CUBE_SCRIPT` standard. Quando l'LSTM ABORTA (P ≥ 0.806 per 3 frame consecutivi), il main loop forza `gripper = 255` (open) e congela il braccio. Cubo cade per fisica. |
 | **Success (atti 1, 3)** | `CUBE_SCRIPT` standard. Robot afferra cubo, transport, drop nella zona. |
 
@@ -56,7 +56,7 @@ Stratified split 70/15/15, seed=42 (replicabile via `outputs/find_reassemble_tes
 | # | Label | Mode | Sequenza | T_full | offset | fail_onset_local | t_fail (slip-script) | P trace osservata |
 |---|-------|------|----------|-------:|-------:|-----------------:|---------------------|-------------------|
 | 1 | SUCCESS | Passive | DROID `droid_file-000_ep168` | 997 | 0 | n/a | — | 0.62 → 0.06 (oscilla bassa) |
-| 2 | FAILURE | Passive | Reassemble `2025-01-10-18-03-36` | 18755 | 5371 | 5771 | 8.00 s | 0.29 → **0.66** a t=8s, gripper-open, cubo cade |
+| 2 | FAILURE | Passive | Reassemble `2025-01-09-17-14-59` | 17068 | 4948 | 5348 | 9.00 s (model-aware) | P trace: 0.31 a t=8s → **0.72** a t=9s (badge attiva), cubo cade |
 | 3 | SUCCESS | Active | DROID `droid_file-001_ep1382` | 694 | 0 | n/a | — | 0.60 → 0.47 (sotto soglia, no abort) |
 | 4 | FAILURE | Active | Reassemble `2025-01-10-16-29-00` | 4354 | 1790 | 2190 | (no slip script) | 0.08 → 0.31 → **0.82** a t=8s, **ABORT @ 8.02 s** |
 
@@ -65,7 +65,7 @@ Atto 4 è la sequenza con la rampa P più drammatica (spread 0.74 misurato live,
 ## 5. Eventi visivi per atto
 
 - **Atto 1 (Part 1, success passive)**: braccio prende cubo, transport, drop nella zona. P bassa (peak 0.62, scende). Reveal "Peak P 0.62".
-- **Atto 2 (Part 1, failure passive)**: braccio prende cubo, lift, transport. **A t=8.00 s il gripper si apre** (script), cubo cade dalla pinza per gravità. Robot continua il gesto fino al drop zone vuoto. P sale a 0.67. Reveal "Peak P 0.67".
+- **Atto 2 (Part 1, failure passive)**: braccio prende cubo, lift, transport. **A t=9.00 s la P attraversa 0.70** (badge "LSTM detected failure - robot unaware" si attiva), il gripper si apre, cubo cade dalla pinza per gravità. Robot continua il gesto fino al drop zone vuoto. Peak P 0.86. Visivo sincronizzato col model awareness.
 - **Part-card transition** (3.5 s): "PART 2 — LSTM IN CONTROL".
 - **Atto 3 (Part 2, success active)**: come atto 1 ma con threshold abilitata. P stabile bassa, no abort. Reveal "SUCCESS".
 - **Atto 4 (Part 2, failure active)**: braccio prende cubo, lift. **A t=8.02 s ABORT card grande, gripper apre, braccio si congela**. Cubo cade dalla pinza per gravità. Reveal "FAILURE (ABORT @ 8.02 s)".

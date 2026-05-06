@@ -517,6 +517,12 @@ def parse_args():
                    help="Number of acts to run in passive (no-abort) mode at the start. "
                         "LSTM still computes P(failure) but the robot ignores it. "
                         "Use this for a 'monitoring-only' Part 1 of the video.")
+    p.add_argument("--passive-release-thr", type=float, default=0.70,
+                   help="P(failure) threshold for the model-aware gripper release "
+                        "in passive failure acts (target='hybrid_anchored'). "
+                        "When the pre-computed P trace first crosses this value "
+                        "for --n-consecutive frames, the gripper opens (re-enactment "
+                        "of the loss-of-grasp synchronized with model awareness).")
     p.add_argument("--plot-y-lo", type=float, default=0.0,
                    help="P(failure) plot lower bound (default 0.0)")
     p.add_argument("--plot-y-hi", type=float, default=1.0,
@@ -720,15 +726,59 @@ def main():
                     fail_onset_local = i
                     break
 
-            # Decide which script to run. Passive failure -> cube_fail_script
-            # (gripper opens at t_fail). Active failure / success -> CUBE_SCRIPT
-            # (gripper opens at end-of-act, or never if ABORT triggers first).
+            # Decide which script to run.
+            #
+            # PASSIVE failure: pre-compute the P(failure) trace on the demo
+            # window and pick `t_release` = first time P crosses
+            # passive_alert_thr for `n_consecutive` frames. The gripper opens
+            # then. This synchronizes the visual loss-of-grasp with the moment
+            # the LSTM "sees" the failure - not with the source label_onset.
+            # Honest framing: the visual is driven by the LIVE classifier
+            # output, not by a hardcoded fail_onset.
+            #
+            # ACTIVE failure: standard CUBE_SCRIPT. Gripper opens only on ABORT
+            # (driven by the live classifier in the main loop, not scripted).
+            #
+            # SUCCESS: standard CUBE_SCRIPT (drop at end-of-act).
             if fail_onset_local >= 0 and passive:
-                t_fail_data = (fail_onset_local - offset) * 0.02
-                t_fail_data = max(min(t_fail_data, duration_sec - 0.5), 1.0)
-                script = cube_fail_script(t_fail_data, duration_sec)
-                log.info("  passive failure: gripper opens at t_fail=%.2fs"
-                         " (fail_onset_frame=%d)", t_fail_data, fail_onset_local)
+                # Pre-compute P trace on the window
+                log.info("  pre-computing P trace (passive release timing)...")
+                n_pre = int(duration_sec / 0.02)
+                pre_ps = np.full(n_pre, np.nan, dtype=np.float32)
+                for k_pre in range(n_pre):
+                    seq_idx_pre = offset + k_pre
+                    if seq_idx_pre + SEQ_LEN <= len(kin_seq):
+                        kw = kin_seq[seq_idx_pre:seq_idx_pre + SEQ_LEN]
+                        cw = cnn_seq[seq_idx_pre:seq_idx_pre + SEQ_LEN]
+                        pre_ps[k_pre] = model_proba(
+                            model, kw, cw, kin_mean, kin_std,
+                            cnn_mean, cnn_std, ipca_c, ipca_m)
+                # First k where P >= passive_alert_thr for n_consecutive frames
+                t_release = -1.0
+                consec_pre = 0
+                for k_pre, p in enumerate(pre_ps):
+                    if not np.isnan(p) and p >= args.passive_release_thr:
+                        consec_pre += 1
+                        if consec_pre >= args.n_consecutive:
+                            t_release = (k_pre - args.n_consecutive + 1) * 0.02
+                            break
+                    else:
+                        consec_pre = 0
+                if t_release >= 0:
+                    # Clamp so the gripper has time to open before duration ends
+                    t_release = max(min(t_release, duration_sec - 0.5), 1.0)
+                    log.info("  passive failure: P first crosses %.2f at t=%.2fs"
+                             " -> gripper opens then (model-aware release)",
+                             args.passive_release_thr, t_release)
+                    script = cube_fail_script(t_release, duration_sec)
+                else:
+                    # Fallback: P never crosses threshold. Use source fail_onset.
+                    t_fail_data = (fail_onset_local - offset) * 0.02
+                    t_fail_data = max(min(t_fail_data, duration_sec - 0.5), 1.0)
+                    log.info("  passive failure: P never crosses %.2f"
+                             " -> fallback to source fail_onset, t_fail=%.2fs",
+                             args.passive_release_thr, t_fail_data)
+                    script = cube_fail_script(t_fail_data, duration_sec)
             elif fail_onset_local >= 0 and not passive:
                 script = list(CUBE_SCRIPT)
                 log.info("  active failure: standard CUBE_SCRIPT;"
