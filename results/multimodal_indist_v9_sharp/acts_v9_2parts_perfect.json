@@ -1,6 +1,6 @@
 [
   {"label": "SUCCESS", "target": "hybrid_anchored", "sequence": "results/cnn_cache_spatial/droid/droid_file-000_ep168.npz",  "offset": 0,    "duration": 12.0},
-  {"label": "FAILURE", "target": "hybrid_anchored", "sequence": "results/cnn_cache_spatial/reassemble/reassemble_2025-01-10-16-29-00.npz", "offset": 1790, "duration": 12.0},
+  {"label": "FAILURE", "target": "hybrid_anchored", "sequence": "results/cnn_cache_spatial/reassemble/reassemble_2025-01-10-18-03-36.npz", "offset": 5371, "duration": 12.0},
   {"label": "SUCCESS", "target": "hybrid_anchored", "sequence": "results/cnn_cache_spatial/droid/droid_file-001_ep1382.npz", "offset": 0,    "duration": 12.0},
-  {"label": "FAILURE", "target": "hybrid_anchored", "sequence": "results/cnn_cache_spatial/reassemble/reassemble_2025-01-10-18-03-36.npz", "offset": 5371, "duration": 12.0}
+  {"label": "FAILURE", "target": "hybrid_anchored", "sequence": "results/cnn_cache_spatial/reassemble/reassemble_2025-01-10-16-29-00.npz", "offset": 1790, "duration": 12.0}
 ]

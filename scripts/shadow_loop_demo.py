@@ -686,119 +686,62 @@ def main():
             script = None
             anchor_qadr = None
         elif target == "hybrid_anchored":
-            # Module C state re-initialization: read ee_pos / ee_quat / gripper
-            # at the source `offset` frame from the cached Mosaico features and
-            # use them to seed the MuJoCo Franka state. The arm trajectory is
-            # then driven by the standard CUBE_SCRIPT (clean visual). The cube
-            # is anchored to the gripper while closed; the anchor releases at
-            # t_fail = (fail_onset - offset) * 0.02s for failure acts (data-
-            # driven slip), or at the end-of-script gripper opening for success
-            # acts. If ABORT triggers in active mode, the anchor releases as
-            # soon as the gripper opens (mode != EXECUTING).
-            ee_pos_init = kin_seq[offset, 0:3].astype(np.float64)
-            ee_quat_xyzw = kin_seq[offset, 3:7].astype(np.float64)
-            # MuJoCo quaternion convention is wxyz; the cache stores xyzw.
-            ee_quat_wxyz = np.array([ee_quat_xyzw[3], ee_quat_xyzw[0],
-                                     ee_quat_xyzw[1], ee_quat_xyzw[2]],
-                                    dtype=np.float64)
-            qn = float(np.linalg.norm(ee_quat_wxyz))
-            if qn > 1e-6:
-                ee_quat_wxyz /= qn
-            else:
-                ee_quat_wxyz = np.array([1.0, 0.0, 0.0, 0.0])
+            # Module C re-enactment of TEST sequences. Design:
+            #   - The arm starts at the canonical HOME pose (lab_home keyframe)
+            #     and reaches CUBE_APPROACH via the script's first waypoint -
+            #     no IK init. This avoids unnatural Franka configurations from
+            #     forcing the source orientation onto our scene geometry.
+            #   - The cube starts at its standard XML position on the table.
+            #     MuJoCo physics handles the grasp (friction 2.5, grip_close=50);
+            #     no anchor trick - the cube is held in the gripper because the
+            #     fingers physically close around it.
+            #   - The classifier inputs the source kin/cnn cached features from
+            #     `offset` onward (the real Mosaico bridge); the MuJoCo render
+            #     never feeds the model.
+            #   - t_fail = (fail_onset - offset) * 0.02s. For PASSIVE failure
+            #     acts the script opens the gripper at t_fail (cube_fail_script);
+            #     the cube falls under gravity. For ACTIVE failure acts, the
+            #     standard CUBE_SCRIPT runs and the gripper opens only when the
+            #     LSTM ABORTs (the cube fall is caused by the model's action).
+            #   - The source state at frame `offset` is logged as data-driven
+            #     metadata for traceability (Module C #2 satisfied via the
+            #     classifier-input bridge plus this metadata trail).
+            ee_pos_src = kin_seq[offset, 0:3].astype(np.float64)
+            ee_quat_xyzw_src = kin_seq[offset, 3:7].astype(np.float64)
             gripper_init_bin = float(kin_seq[offset, 7])
+            log.info("  source state @ frame %d: ee_pos=(%.3f, %.3f, %.3f), "
+                     "ee_quat_xyzw=(%.3f, %.3f, %.3f, %.3f), gripper_bin=%.0f",
+                     offset, *ee_pos_src, *ee_quat_xyzw_src, gripper_init_bin)
 
-            # Project the source pose into the MuJoCo workspace: the arm is
-            # placed with the *relative* orientation/gripper from the source
-            # but at a global xy/z chosen so the ee starts +10cm above the
-            # cube's XML position. This is the workspace_offset trick: the
-            # init is data-driven (orientation, gripper) but visually aligned
-            # with the standard scene (cube on table at fixed xml location).
-            cube_pos_xml = np.array([0.50, -0.12, CUBE_Z_MUJOCO])
-            target_pos_world = cube_pos_xml + np.array([0.0, 0.0, 0.10])
-
-            # Single IK call at setup, on a separate MjData so physics is
-            # untouched. Warm-start from HOME (canonical, well-conditioned).
-            mj_data_ik = mujoco.MjData(mj_model)
-            mj_data_ik.qpos[:] = mj_data.qpos
-            for j, qadr in enumerate(arm_joint_qadrs):
-                mj_data_ik.qpos[qadr] = float(HOME[j])
-            mujoco.mj_forward(mj_model, mj_data_ik)
-            q_init, ep, eo, n_iter = cartesian_ik_step(
-                mj_model, mj_data_ik, ee_site,
-                arm_qpos_lo=0, arm_qpos_hi=7,
-                arm_dof_lo=0, arm_dof_hi=7,
-                target_pos=target_pos_world,
-                target_quat=ee_quat_wxyz,
-                max_iter=40, tol_pos=5e-3, tol_ori=8e-2)
-            if ep < 5e-2 and eo < 2e-1:
-                for j, qadr in enumerate(arm_joint_qadrs):
-                    mj_data.qpos[qadr] = float(q_init[j])
-                mujoco.mj_forward(mj_model, mj_data)
-                log.info("  IK init OK (n_iter=%d): err_pos=%.4f m  err_ori=%.3f rad",
-                         n_iter, ep, eo)
-            else:
-                log.warning("  IK init failed (err_pos=%.4f, err_ori=%.4f); "
-                            "fallback to HOME", ep, eo)
-                for j, qadr in enumerate(arm_joint_qadrs):
-                    mj_data.qpos[qadr] = float(HOME[j])
-                mujoco.mj_forward(mj_model, mj_data)
-            # Sync controller targets to the new qpos so the arm doesn't snap
-            # to HOME on the first physics step.
-            for j, act in enumerate(arm_acts):
-                mj_data.ctrl[act] = float(mj_data.qpos[arm_joint_qadrs[j]])
-
-            # Cube initial pose: if the source gripper at frame `offset` is
-            # closed (binarized 0), the cube starts already in the gripper;
-            # otherwise it sits at the standard XML position on the table.
-            if gripper_init_bin < 0.5:
-                ee_now = mj_data.site_xpos[ee_site].copy()
-                cube_init_xyz = ee_now + np.array([0.0, 0.0, -0.02])
-            else:
-                cube_init_xyz = cube_pos_xml.copy()
-            mj_data.qpos[cube_qadr:cube_qadr + 3] = cube_init_xyz
-            mj_data.qpos[cube_qadr + 3:cube_qadr + 7] = [1.0, 0.0, 0.0, 0.0]
-            mj_data.qvel[cube_qadr:cube_qadr + 6] = 0.0
-            mujoco.mj_forward(mj_model, mj_data)
-
-            # t_fail: first frame where label_seq >= 0.5 in the demo window.
-            # PASSIVE failure acts: anchor releases at t_fail (the cube drop
-            # visualizes the source slip event - the LSTM observes but does
-            # not act).
-            # ACTIVE failure acts: t_fail=inf so the cube stays anchored until
-            # ABORT triggers (or the script opens the gripper at the end). The
-            # cube fall is then *caused* by the LSTM's safety abort, which is
-            # exactly the narrative Module C wants for Part 2.
-            # SUCCESS acts (no fail transition): t_fail=inf, anchor stays until
-            # the script's end-of-act gripper opening (drop zone delivery).
+            # First label transition in the demo window (relative to offset)
             fail_onset_local = -1
             for i in range(offset, len(label_seq)):
                 if label_seq[i] >= 0.5:
                     fail_onset_local = i
                     break
+
+            # Decide which script to run. Passive failure -> cube_fail_script
+            # (gripper opens at t_fail). Active failure / success -> CUBE_SCRIPT
+            # (gripper opens at end-of-act, or never if ABORT triggers first).
             if fail_onset_local >= 0 and passive:
                 t_fail_data = (fail_onset_local - offset) * 0.02
-                log.info("  fail_onset_frame=%d (offset=%d) -> t_fail=%.2fs"
-                         " (passive: anchor releases at t_fail)",
-                         fail_onset_local, offset, t_fail_data)
+                t_fail_data = max(min(t_fail_data, duration_sec - 0.5), 1.0)
+                script = cube_fail_script(t_fail_data, duration_sec)
+                log.info("  passive failure: gripper opens at t_fail=%.2fs"
+                         " (fail_onset_frame=%d)", t_fail_data, fail_onset_local)
             elif fail_onset_local >= 0 and not passive:
-                t_fail_data = float("inf")
-                log.info("  fail_onset_frame=%d (offset=%d) -> t_fail=inf"
-                         " (active: cube falls only on LSTM ABORT)",
-                         fail_onset_local, offset)
+                script = list(CUBE_SCRIPT)
+                log.info("  active failure: standard CUBE_SCRIPT;"
+                         " cube fall caused by LSTM ABORT (fail_onset_frame=%d)",
+                         fail_onset_local)
             else:
-                t_fail_data = float("inf")
-                log.info("  no fail label transition -> t_fail=inf (success act)")
+                script = list(CUBE_SCRIPT)
+                log.info("  success act: standard CUBE_SCRIPT,"
+                         " no fail transition in window")
 
-            # Prepend a virtual waypoint at t=-0.5s holding the IK-init pose,
-            # so script_target interpolates from q_init (not HOME) into the
-            # first scripted waypoint - prevents a visible arm snap on tick 0.
-            q_init_arm = np.array(
-                [float(mj_data.qpos[adr]) for adr in arm_joint_qadrs])
-            script = [(-0.5, 0.0, q_init_arm, 255.0)] + list(CUBE_SCRIPT)
-            anchor_qadr = cube_qadr
-            anchor_offset_z = -0.02  # cube hangs ~2cm below the palm site
-            slip_at = t_fail_data    # reuse the existing anchor-release logic
+            # Cube starts at its XML position on the table. Physics handles the
+            # rest (grasp via friction, lift, drop). No anchor.
+            anchor_qadr = None
         else:
             raise ValueError(f"Unknown target: {target}")
 
