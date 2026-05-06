@@ -29,6 +29,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.cached_lstm import LateFusionLSTM
+from models.cartesian_ik import cartesian_ik_step, map_gripper_meters_to_ctrl
 from data import feature_mapper
 from data.cross_dataset_ingestor import CrossDatasetIngestor
 
@@ -41,6 +42,7 @@ log = logging.getLogger("shadow_loop")
 
 SEQ_LEN = 50
 KIN_DIM = 15
+CUBE_Z_MUJOCO = 0.44  # z target del cubo nel grasp_lab (per workspace_offset replay)
 GRASP_LAB_XML = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "simulation", "assets", "mujoco_menagerie", "franka_emika_panda", "grasp_lab.xml",
@@ -88,6 +90,28 @@ CUBE_SCRIPT = [  # cube reach + grasp + transport to drop zone + release
     (8.5, 11.0,  DROP_OVER,      50.0),
     (11.0, 12.0, DROP_OVER,     255.0),
 ]
+
+
+def cube_fail_script(slip_at: float, total: float = 12.0):
+    """Variante di CUBE_SCRIPT con timing STANDARD (pickup naturale a 5.5-6.7s,
+    lift naturale fino a slip_at), poi rilascio scriptato del gripper a slip_at
+    -> il cubo cade. Il braccio prosegue il transport verso DROP_OVER ignaro.
+    Usato per sincronizzare il release fisico con il fail event della sequenza
+    (es. slip_at=8.0 quando il label transition Reassemble cade lì): il
+    classifier vede P alta e il cubo cade nello stesso istante, ma il robot
+    in passive mode continua lo script come monitoring.
+    """
+    transport_end = max(slip_at + 0.3, total - 1.0)
+    return [
+        (0.0,           2.5,            CUBE_APPROACH, 255.0),
+        (2.5,           4.0,            CUBE_ABOVE,    255.0),
+        (4.0,           5.5,            CUBE_DESCEND,  255.0),
+        (5.5,           6.7,            CUBE_DESCEND,   50.0),
+        (6.7,           slip_at,        CUBE_LIFT,      50.0),
+        (slip_at,       slip_at + 0.3,  CUBE_LIFT,     255.0),
+        (slip_at + 0.3, transport_end,  DROP_OVER,     255.0),
+        (transport_end, total,          DROP_OVER,     255.0),
+    ]
 
 
 def script_target(t: float, script):
@@ -614,17 +638,167 @@ def main():
         log.info("Act %d/%d (%s on %s): seq T=%d  offset=%d", act_index + 1, total_acts,
                  act_label, target, len(kin_seq), offset)
 
+        # Replay state (used only when target == "replay")
+        replay_ee_pose = None
+        replay_gripper = None
+        replay_offset_xyz = None
+        mj_data_ik = None
+        # Anchor Z offset (used by 'hybrid_anchored' so the cube hangs between
+        # the gripper fingers instead of overlapping the palm site).
+        anchor_offset_z = 0.0
+
         if target == "sphere":
             script = SPHERE_SCRIPT
-            # Default: anchor sphere to gripper while closed (friction=0).
-            # slip=True disables the anchor for the entire act -> ball stays
-            # behind from the moment the gripper closes.
-            # slip_at>0 keeps the anchor live until sim_t reaches slip_at,
-            # then releases it -> ball falls mid-lift after a clean grasp.
             anchor_qadr = None if slip else sphere_qadr
         elif target == "cube":
-            script = CUBE_SCRIPT
-            anchor_qadr = None         # real friction holds the cube
+            if slip_at > 0:
+                script = cube_fail_script(slip_at, duration_sec)
+                log.info("  cube fail mode: slip scripted at t=%.2fs", slip_at)
+            else:
+                script = CUBE_SCRIPT
+            anchor_qadr = None
+        elif target == "replay":
+            # Kin replay via Cartesian IK from the source sequence ee_pose.
+            # The robot in MuJoCo follows the real Mosaico-recorded trajectory
+            # of the source sequence (Franka 7-DOF). Slip e contatti sono
+            # decisi dalla fisica MuJoCo, niente waypoint scriptati.
+            replay_ee_pose = kin_seq[:, :7].astype(np.float64)  # (T,7) pos+quat
+            replay_gripper = kin_seq[:, 7].astype(np.float64)   # (T,) m
+            n_frames = int(duration_sec / 0.02)
+            seq_window_hi = min(offset + n_frames, len(replay_ee_pose))
+            seq_window = replay_ee_pose[offset:seq_window_hi]
+            z_min_seq = float(seq_window[:, 2].min())
+            replay_offset_xyz = np.array([0.0, 0.0, CUBE_Z_MUJOCO - z_min_seq])
+            log.info("  replay mode: source=%s offset=%d workspace_offset=%s",
+                     seq_basename, offset, replay_offset_xyz.round(3).tolist())
+            # Sposto il cubo dove il braccio si abbassa (Z minimo nella finestra)
+            z_min_idx_local = int(np.argmin(seq_window[:, 2]))
+            cube_xy = seq_window[z_min_idx_local, :2]
+            mj_data.qpos[cube_qadr:cube_qadr + 3] = [
+                float(cube_xy[0]), float(cube_xy[1]), CUBE_Z_MUJOCO - 0.02]
+            mj_data.qpos[cube_qadr + 3:cube_qadr + 7] = [1.0, 0.0, 0.0, 0.0]
+            mj_data.qvel[cube_qadr:cube_qadr + 6] = 0.0
+            mujoco.mj_forward(mj_model, mj_data)
+            # MjData separato per IK (non disturba lo stato fisico)
+            mj_data_ik = mujoco.MjData(mj_model)
+            mj_data_ik.qpos[:] = mj_data.qpos
+            mj_data_ik.qvel[:] = 0.0
+            script = None
+            anchor_qadr = None
+        elif target == "hybrid_anchored":
+            # Module C state re-initialization: read ee_pos / ee_quat / gripper
+            # at the source `offset` frame from the cached Mosaico features and
+            # use them to seed the MuJoCo Franka state. The arm trajectory is
+            # then driven by the standard CUBE_SCRIPT (clean visual). The cube
+            # is anchored to the gripper while closed; the anchor releases at
+            # t_fail = (fail_onset - offset) * 0.02s for failure acts (data-
+            # driven slip), or at the end-of-script gripper opening for success
+            # acts. If ABORT triggers in active mode, the anchor releases as
+            # soon as the gripper opens (mode != EXECUTING).
+            ee_pos_init = kin_seq[offset, 0:3].astype(np.float64)
+            ee_quat_xyzw = kin_seq[offset, 3:7].astype(np.float64)
+            # MuJoCo quaternion convention is wxyz; the cache stores xyzw.
+            ee_quat_wxyz = np.array([ee_quat_xyzw[3], ee_quat_xyzw[0],
+                                     ee_quat_xyzw[1], ee_quat_xyzw[2]],
+                                    dtype=np.float64)
+            qn = float(np.linalg.norm(ee_quat_wxyz))
+            if qn > 1e-6:
+                ee_quat_wxyz /= qn
+            else:
+                ee_quat_wxyz = np.array([1.0, 0.0, 0.0, 0.0])
+            gripper_init_bin = float(kin_seq[offset, 7])
+
+            # Project the source pose into the MuJoCo workspace: the arm is
+            # placed with the *relative* orientation/gripper from the source
+            # but at a global xy/z chosen so the ee starts +10cm above the
+            # cube's XML position. This is the workspace_offset trick: the
+            # init is data-driven (orientation, gripper) but visually aligned
+            # with the standard scene (cube on table at fixed xml location).
+            cube_pos_xml = np.array([0.50, -0.12, CUBE_Z_MUJOCO])
+            target_pos_world = cube_pos_xml + np.array([0.0, 0.0, 0.10])
+
+            # Single IK call at setup, on a separate MjData so physics is
+            # untouched. Warm-start from HOME (canonical, well-conditioned).
+            mj_data_ik = mujoco.MjData(mj_model)
+            mj_data_ik.qpos[:] = mj_data.qpos
+            for j, qadr in enumerate(arm_joint_qadrs):
+                mj_data_ik.qpos[qadr] = float(HOME[j])
+            mujoco.mj_forward(mj_model, mj_data_ik)
+            q_init, ep, eo, n_iter = cartesian_ik_step(
+                mj_model, mj_data_ik, ee_site,
+                arm_qpos_lo=0, arm_qpos_hi=7,
+                arm_dof_lo=0, arm_dof_hi=7,
+                target_pos=target_pos_world,
+                target_quat=ee_quat_wxyz,
+                max_iter=40, tol_pos=5e-3, tol_ori=8e-2)
+            if ep < 5e-2 and eo < 2e-1:
+                for j, qadr in enumerate(arm_joint_qadrs):
+                    mj_data.qpos[qadr] = float(q_init[j])
+                mujoco.mj_forward(mj_model, mj_data)
+                log.info("  IK init OK (n_iter=%d): err_pos=%.4f m  err_ori=%.3f rad",
+                         n_iter, ep, eo)
+            else:
+                log.warning("  IK init failed (err_pos=%.4f, err_ori=%.4f); "
+                            "fallback to HOME", ep, eo)
+                for j, qadr in enumerate(arm_joint_qadrs):
+                    mj_data.qpos[qadr] = float(HOME[j])
+                mujoco.mj_forward(mj_model, mj_data)
+            # Sync controller targets to the new qpos so the arm doesn't snap
+            # to HOME on the first physics step.
+            for j, act in enumerate(arm_acts):
+                mj_data.ctrl[act] = float(mj_data.qpos[arm_joint_qadrs[j]])
+
+            # Cube initial pose: if the source gripper at frame `offset` is
+            # closed (binarized 0), the cube starts already in the gripper;
+            # otherwise it sits at the standard XML position on the table.
+            if gripper_init_bin < 0.5:
+                ee_now = mj_data.site_xpos[ee_site].copy()
+                cube_init_xyz = ee_now + np.array([0.0, 0.0, -0.02])
+            else:
+                cube_init_xyz = cube_pos_xml.copy()
+            mj_data.qpos[cube_qadr:cube_qadr + 3] = cube_init_xyz
+            mj_data.qpos[cube_qadr + 3:cube_qadr + 7] = [1.0, 0.0, 0.0, 0.0]
+            mj_data.qvel[cube_qadr:cube_qadr + 6] = 0.0
+            mujoco.mj_forward(mj_model, mj_data)
+
+            # t_fail: first frame where label_seq >= 0.5 in the demo window.
+            # PASSIVE failure acts: anchor releases at t_fail (the cube drop
+            # visualizes the source slip event - the LSTM observes but does
+            # not act).
+            # ACTIVE failure acts: t_fail=inf so the cube stays anchored until
+            # ABORT triggers (or the script opens the gripper at the end). The
+            # cube fall is then *caused* by the LSTM's safety abort, which is
+            # exactly the narrative Module C wants for Part 2.
+            # SUCCESS acts (no fail transition): t_fail=inf, anchor stays until
+            # the script's end-of-act gripper opening (drop zone delivery).
+            fail_onset_local = -1
+            for i in range(offset, len(label_seq)):
+                if label_seq[i] >= 0.5:
+                    fail_onset_local = i
+                    break
+            if fail_onset_local >= 0 and passive:
+                t_fail_data = (fail_onset_local - offset) * 0.02
+                log.info("  fail_onset_frame=%d (offset=%d) -> t_fail=%.2fs"
+                         " (passive: anchor releases at t_fail)",
+                         fail_onset_local, offset, t_fail_data)
+            elif fail_onset_local >= 0 and not passive:
+                t_fail_data = float("inf")
+                log.info("  fail_onset_frame=%d (offset=%d) -> t_fail=inf"
+                         " (active: cube falls only on LSTM ABORT)",
+                         fail_onset_local, offset)
+            else:
+                t_fail_data = float("inf")
+                log.info("  no fail label transition -> t_fail=inf (success act)")
+
+            # Prepend a virtual waypoint at t=-0.5s holding the IK-init pose,
+            # so script_target interpolates from q_init (not HOME) into the
+            # first scripted waypoint - prevents a visible arm snap on tick 0.
+            q_init_arm = np.array(
+                [float(mj_data.qpos[adr]) for adr in arm_joint_qadrs])
+            script = [(-0.5, 0.0, q_init_arm, 255.0)] + list(CUBE_SCRIPT)
+            anchor_qadr = cube_qadr
+            anchor_offset_z = -0.02  # cube hangs ~2cm below the palm site
+            slip_at = t_fail_data    # reuse the existing anchor-release logic
         else:
             raise ValueError(f"Unknown target: {target}")
 
@@ -635,19 +809,20 @@ def main():
         # may not overcome the lift acceleration -> physical slip. This is a
         # static physical parameter (gripper command), not a scripted event:
         # MuJoCo physics decides if and when the cube slips.
-        if grip_close != 50.0:
+        if script is not None and grip_close != 50.0:
             log.info("  grip_close override: %.1f (weak grip)", grip_close)
             script = [
                 (ts, te, qpos, (grip_close if grip < 200.0 else grip))
                 for ts, te, qpos, grip in script
             ]
 
-        # Allow per-act duration override (script is parametric in time)
-        script = [(ts, te, q, g) for (ts, te, q, g) in script
-                  if ts < duration_sec]
-        if script and script[-1][1] > duration_sec:
-            ts, _, q, g = script[-1]
-            script[-1] = (ts, duration_sec, q, g)
+        if script is not None:
+            # Allow per-act duration override (script is parametric in time)
+            script = [(ts, te, q, g) for (ts, te, q, g) in script
+                      if ts < duration_sec]
+            if script and script[-1][1] > duration_sec:
+                ts, _, q, g = script[-1]
+                script[-1] = (ts, duration_sec, q, g)
 
         n_ticks = int(duration_sec / 0.02)
         consec = 0
@@ -661,10 +836,31 @@ def main():
             sim_t = k * 0.02
 
             if mode == "EXECUTING":
-                qpos_t, grip_t = script_target(sim_t, script)
-                for j, act in enumerate(arm_acts):
-                    mj_data.ctrl[act] = float(qpos_t[j])
-                mj_data.ctrl[gripper_act] = float(grip_t)
+                if target == "replay":
+                    seq_idx_replay = offset + k
+                    if seq_idx_replay < len(replay_ee_pose):
+                        target_pos_w = (replay_ee_pose[seq_idx_replay, :3]
+                                        + replay_offset_xyz)
+                        target_quat_w = replay_ee_pose[seq_idx_replay, 3:7]
+                        # warm-start dal current arm state della sim fisica
+                        mj_data_ik.qpos[0:7] = mj_data.qpos[0:7]
+                        q_target_arm, _, _, _ = cartesian_ik_step(
+                            mj_model, mj_data_ik, ee_site,
+                            arm_qpos_lo=0, arm_qpos_hi=7,
+                            arm_dof_lo=0, arm_dof_hi=7,
+                            target_pos=target_pos_w,
+                            target_quat=target_quat_w)
+                        for j, act in enumerate(arm_acts):
+                            mj_data.ctrl[act] = float(q_target_arm[j])
+                        grip_cmd = map_gripper_meters_to_ctrl(
+                            replay_gripper[seq_idx_replay])
+                        mj_data.ctrl[gripper_act] = grip_cmd
+                    # else: hold last ctrl (sequenza esaurita, raro entro 12s)
+                else:
+                    qpos_t, grip_t = script_target(sim_t, script)
+                    for j, act in enumerate(arm_acts):
+                        mj_data.ctrl[act] = float(qpos_t[j])
+                    mj_data.ctrl[gripper_act] = float(grip_t)
             else:
                 for j, act in enumerate(arm_acts):
                     mj_data.ctrl[act] = float(abort_pose[j])
@@ -679,9 +875,28 @@ def main():
                 _, current_grip = script_target(sim_t, script)
                 if current_grip < 200.0:
                     ee_pos = mj_data.site_xpos[ee_site].copy()
+                    ee_pos[2] += anchor_offset_z
                     mj_data.qpos[anchor_qadr:anchor_qadr + 3] = ee_pos
                     mj_data.qpos[anchor_qadr + 3:anchor_qadr + 7] = [1.0, 0.0, 0.0, 0.0]
                     mj_data.qvel[anchor_qadr:anchor_qadr + 6] = 0.0
+
+            # Replay cube anchor: physical proxy compensation. The source
+            # sequence manipulates a small NIST gear; MuJoCo has a 4cm cube.
+            # While the source gripper is closed AND no fail event yet, anchor
+            # the cube to the end-effector. When the source label transitions
+            # to fail (gear slip in Reassemble) or the gripper opens or the
+            # LSTM aborts, the anchor releases -> cube falls under gravity.
+            if target == "replay" and mode == "EXECUTING":
+                seq_idx_r = offset + k
+                if seq_idx_r < len(replay_gripper):
+                    gripper_m_now = float(replay_gripper[seq_idx_r])
+                    label_now = float(label_seq[seq_idx_r])
+                    if gripper_m_now < 0.015 and label_now < 0.5:
+                        ee_pos_now = mj_data.site_xpos[ee_site].copy()
+                        mj_data.qpos[cube_qadr:cube_qadr + 3] = (
+                            ee_pos_now + np.array([0.0, 0.0, -0.02]))
+                        mj_data.qpos[cube_qadr + 3:cube_qadr + 7] = [1.0, 0.0, 0.0, 0.0]
+                        mj_data.qvel[cube_qadr:cube_qadr + 6] = 0.0
 
             prob = float("nan")
             gt_label = -1
