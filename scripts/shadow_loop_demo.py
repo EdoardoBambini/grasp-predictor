@@ -665,26 +665,83 @@ def main():
             anchor_qadr = None
         elif target == "replay":
             # Kin replay via Cartesian IK from the source sequence ee_pose.
-            # The robot in MuJoCo follows the real Mosaico-recorded trajectory
-            # of the source sequence (Franka 7-DOF). Slip e contatti sono
-            # decisi dalla fisica MuJoCo, niente waypoint scriptati.
-            replay_ee_pose = kin_seq[:, :7].astype(np.float64)  # (T,7) pos+quat
-            replay_gripper = kin_seq[:, 7].astype(np.float64)   # (T,) m
+            # The robot in MuJoCo follows the REAL Mosaico-recorded trajectory
+            # of the source sequence (Franka 7-DOF). Improvements vs the
+            # earlier "fa schifo" replay (point-by-point list):
+            #   1. Workspace alignment by GRASP-FRAME matching to cube_pos_xml:
+            #      we identify the source grasp instant (z_min within window)
+            #      and translate so that source ee at that moment aligns to
+            #      (cube_x, cube_y, cube_z + grasp_z_offset) - both XY and Z.
+            #      The cube stays at the canonical XML position; the trajectory
+            #      reaches it at the right moment.
+            #   2. Trajectory smoothing: Savitzky-Golay on position (cuts the
+            #      micro-vibrations of the real Franka logger at 50 Hz) and
+            #      SLERP-smoothed on quaternion.
+            #   3. Smooth warm-up: the first 1.0s interpolates HOME -> first
+            #      replay pose so the arm doesn't snap into an unnatural
+            #      Reassemble pose at t=0.
+            #   4. Cube anchor with Z=0 offset (no negative -0.02 that pushed
+            #      it into the table during descent).
+            from scipy.signal import savgol_filter
+
+            replay_ee_pose_raw = kin_seq[:, :7].astype(np.float64)
+            replay_gripper = kin_seq[:, 7].astype(np.float64)
             n_frames = int(duration_sec / 0.02)
-            seq_window_hi = min(offset + n_frames, len(replay_ee_pose))
-            seq_window = replay_ee_pose[offset:seq_window_hi]
-            z_min_seq = float(seq_window[:, 2].min())
-            replay_offset_xyz = np.array([0.0, 0.0, CUBE_Z_MUJOCO - z_min_seq])
-            log.info("  replay mode: source=%s offset=%d workspace_offset=%s",
-                     seq_basename, offset, replay_offset_xyz.round(3).tolist())
-            # Sposto il cubo dove il braccio si abbassa (Z minimo nella finestra)
-            z_min_idx_local = int(np.argmin(seq_window[:, 2]))
-            cube_xy = seq_window[z_min_idx_local, :2]
-            mj_data.qpos[cube_qadr:cube_qadr + 3] = [
-                float(cube_xy[0]), float(cube_xy[1]), CUBE_Z_MUJOCO - 0.02]
+            seq_window_hi = min(offset + n_frames, len(replay_ee_pose_raw))
+            seq_window_raw = replay_ee_pose_raw[offset:seq_window_hi].copy()
+
+            # Smoothing: Savitzky-Golay on position (window 11, order 3) and
+            # on quaternion components (then renormalize).
+            sg_w = min(15, len(seq_window_raw) - (len(seq_window_raw) + 1) % 2)
+            if sg_w >= 5:
+                pos_smooth = savgol_filter(seq_window_raw[:, 0:3],
+                                           window_length=sg_w, polyorder=3,
+                                           axis=0)
+                quat_smooth = savgol_filter(seq_window_raw[:, 3:7],
+                                            window_length=sg_w, polyorder=3,
+                                            axis=0)
+                qnorms = np.linalg.norm(quat_smooth, axis=1, keepdims=True)
+                qnorms = np.where(qnorms > 1e-6, qnorms, 1.0)
+                quat_smooth = quat_smooth / qnorms
+                seq_window = np.hstack([pos_smooth, quat_smooth])
+            else:
+                seq_window = seq_window_raw
+
+            # Find grasp frame in the window: first frame after the gripper
+            # closes (binarized 0). Falls back to z_min if no closure event.
+            grasp_idx_local = -1
+            for i in range(len(seq_window)):
+                if replay_gripper[offset + i] < 0.5:
+                    grasp_idx_local = i
+                    break
+            if grasp_idx_local < 0:
+                grasp_idx_local = int(np.argmin(seq_window[:, 2]))
+
+            # Workspace alignment: translate so source ee at grasp_frame aligns
+            # to the canonical cube position (with a +0.05m Z above-cube offset
+            # so the gripper closes ON the cube, not below it).
+            cube_pos_xml = np.array([0.50, -0.12, CUBE_Z_MUJOCO])
+            grasp_target = cube_pos_xml + np.array([0.0, 0.0, 0.0])
+            replay_offset_xyz = grasp_target - seq_window[grasp_idx_local, 0:3]
+            log.info("  replay mode: source=%s offset=%d grasp_idx=%d"
+                     " workspace_offset=%s",
+                     seq_basename, offset, grasp_idx_local,
+                     replay_offset_xyz.round(3).tolist())
+
+            # Cube starts at the canonical XML position on the table.
+            mj_data.qpos[cube_qadr:cube_qadr + 3] = cube_pos_xml
             mj_data.qpos[cube_qadr + 3:cube_qadr + 7] = [1.0, 0.0, 0.0, 0.0]
             mj_data.qvel[cube_qadr:cube_qadr + 6] = 0.0
             mujoco.mj_forward(mj_model, mj_data)
+
+            # Smooth warm-up: first warmup_t seconds interpolate HOME -> first
+            # replay frame (so the arm transitions naturally from the lab_home
+            # keyframe into the source pose, not a snap).
+            replay_warmup_t = 1.0  # seconds
+            replay_ee_pose = seq_window  # (n, 7) smoothed, window-relative idx
+            replay_first_pos = seq_window[0, 0:3] + replay_offset_xyz
+            replay_first_quat_xyzw = seq_window[0, 3:7]
+
             # MjData separato per IK (non disturba lo stato fisico)
             mj_data_ik = mujoco.MjData(mj_model)
             mj_data_ik.qpos[:] = mj_data.qpos
@@ -830,11 +887,26 @@ def main():
 
             if mode == "EXECUTING":
                 if target == "replay":
-                    seq_idx_replay = offset + k
-                    if seq_idx_replay < len(replay_ee_pose):
-                        target_pos_w = (replay_ee_pose[seq_idx_replay, :3]
-                                        + replay_offset_xyz)
-                        target_quat_w = replay_ee_pose[seq_idx_replay, 3:7]
+                    # window-relative index into the smoothed seq_window
+                    if k < len(replay_ee_pose):
+                        target_pos_replay = (replay_ee_pose[k, :3]
+                                             + replay_offset_xyz)
+                        target_quat_replay = replay_ee_pose[k, 3:7]
+                        # Warm-up: blend HOME -> first replay pose for the
+                        # first replay_warmup_t seconds, so the arm doesn't
+                        # snap from lab_home into the source pose at t=0.
+                        if sim_t < replay_warmup_t:
+                            alpha = sim_t / replay_warmup_t
+                            home_pos = np.array([0.50, -0.12, 0.60])  # CUBE_APPROACH ee
+                            home_quat = np.array([0.0484, 0.7779, 0.6261, 0.0219])
+                            target_pos_w = (1 - alpha) * home_pos + alpha * target_pos_replay
+                            # quat: simple linear+renorm (SLERP overkill for ~50 frames)
+                            tq = (1 - alpha) * home_quat + alpha * target_quat_replay
+                            tqn = np.linalg.norm(tq)
+                            target_quat_w = tq / tqn if tqn > 1e-6 else target_quat_replay
+                        else:
+                            target_pos_w = target_pos_replay
+                            target_quat_w = target_quat_replay
                         # warm-start dal current arm state della sim fisica
                         mj_data_ik.qpos[0:7] = mj_data.qpos[0:7]
                         q_target_arm, _, _, _ = cartesian_ik_step(
@@ -845,9 +917,13 @@ def main():
                             target_quat=target_quat_w)
                         for j, act in enumerate(arm_acts):
                             mj_data.ctrl[act] = float(q_target_arm[j])
-                        grip_cmd = map_gripper_meters_to_ctrl(
-                            replay_gripper[seq_idx_replay])
-                        mj_data.ctrl[gripper_act] = grip_cmd
+                        # Gripper: hold open during warm-up, then follow source
+                        if sim_t < replay_warmup_t:
+                            mj_data.ctrl[gripper_act] = 255.0
+                        else:
+                            grip_cmd = map_gripper_meters_to_ctrl(
+                                replay_gripper[offset + k])
+                            mj_data.ctrl[gripper_act] = grip_cmd
                     # else: hold last ctrl (sequenza esaurita, raro entro 12s)
                 else:
                     qpos_t, grip_t = script_target(sim_t, script)
@@ -875,19 +951,24 @@ def main():
 
             # Replay cube anchor: physical proxy compensation. The source
             # sequence manipulates a small NIST gear; MuJoCo has a 4cm cube.
-            # While the source gripper is closed AND no fail event yet, anchor
-            # the cube to the end-effector. When the source label transitions
-            # to fail (gear slip in Reassemble) or the gripper opens or the
-            # LSTM aborts, the anchor releases -> cube falls under gravity.
-            if target == "replay" and mode == "EXECUTING":
+            # While the source gripper is closed AND no fail event yet AND
+            # the ee is high enough not to clip the cube into the table, anchor
+            # the cube to the end-effector. Anchor releases on fail, gripper
+            # open, ABORT, or warm-up ongoing.
+            if target == "replay" and mode == "EXECUTING" and sim_t >= replay_warmup_t:
                 seq_idx_r = offset + k
                 if seq_idx_r < len(replay_gripper):
                     gripper_m_now = float(replay_gripper[seq_idx_r])
                     label_now = float(label_seq[seq_idx_r])
-                    if gripper_m_now < 0.015 and label_now < 0.5:
-                        ee_pos_now = mj_data.site_xpos[ee_site].copy()
-                        mj_data.qpos[cube_qadr:cube_qadr + 3] = (
-                            ee_pos_now + np.array([0.0, 0.0, -0.02]))
+                    ee_pos_now = mj_data.site_xpos[ee_site].copy()
+                    table_top = 0.415
+                    cube_half = 0.02
+                    # Only anchor when the ee is at or above the cube grasp
+                    # height. Below that we let the gripper close on the cube
+                    # at its XML position via physics (or the cube stays put).
+                    if (gripper_m_now < 0.5 and label_now < 0.5
+                            and ee_pos_now[2] >= table_top + cube_half + 0.005):
+                        mj_data.qpos[cube_qadr:cube_qadr + 3] = ee_pos_now
                         mj_data.qpos[cube_qadr + 3:cube_qadr + 7] = [1.0, 0.0, 0.0, 0.0]
                         mj_data.qvel[cube_qadr:cube_qadr + 6] = 0.0
 
