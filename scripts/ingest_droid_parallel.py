@@ -1,18 +1,4 @@
-"""
-Parallel ingestion of DROID into mosaicod, using DROIDPlugin from the
-manipulation pack of the Mosaico SDK (with the iter_mp4_frames patch active
-so the per-sequence MP4 stream is fully decoded). Splits the discovered
-sequences across N worker processes; each worker holds its own
-MosaicoClient + ManipulationRunner + DROIDPlugin instance.
-
-The runner skips sequences whose name is already in the catalog, so re-running
-is safe (idempotent on the existing catalog state).
-
-Usage:
-    py -3.13 scripts/ingest_droid_parallel.py                     # defaults
-    py -3.13 scripts/ingest_droid_parallel.py --workers 8 \\
-        --max-sequences 1500 --data-root "E:/datasets/droid/data"
-"""
+"""Parallel ingestion of DROID into mosaicod via DROIDPlugin. Idempotent."""
 from __future__ import annotations
 
 import argparse

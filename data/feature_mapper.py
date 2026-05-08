@@ -1,18 +1,6 @@
-"""
-Projects dataset-specific DataFrameExtractor outputs onto a single canonical
-8-dim base schema (ee xyz + quaternion xyzw + gripper scalar) plus 7
-finite-difference derivatives = 15 EXTENDED_FEATURES, fed to the LSTM kin
-stream.
-
-These 8 base features are the lowest common denominator across the three
-source formats (HDF5 Reassemble, h5 ROS bag like DROID, TFRecord Fractal
-RT-1). Tactile and joint effort live in one dataset only; including them
-would break the cross-dataset bridge.
-
-Also exposes optional RGB image topics per dataset (multimodal path). The
-image ingest is lazy: raw JPEG bytes travel through the sync stage as
-object columns, decoding happens once during the CNN pre-cache.
-"""
+"""Canonical projection: per-dataset DataFrameExtractor output -> 8-dim base
+schema (ee xyz + quaternion + gripper) + 7 finite-difference derivatives, plus
+optional RGB image topic for the multimodal path."""
 from __future__ import annotations
 
 import io
@@ -51,10 +39,6 @@ TOPICS_PER_DATASET: Dict[str, List[str]] = {
         "/observation/state/cartesian_position",
         "/observation/state/gripper_position",
     ],
-    "mml": [
-        "/iiwa/eePose",
-        "/allegro_hand_right/joint_states",
-    ],
     "fractal_rt1": [
         "/step/observation/base_pose_tool_reached",
         "/step/observation/gripper_closed",
@@ -66,15 +50,13 @@ TOPICS_PER_DATASET: Dict[str, List[str]] = {
 # Optional RGB image topic per dataset (multimodal path). None means the
 # dataset has no RGB available and goes through kinematic-only. The exact
 # topic names must match what the Mosaico plugin publishes at ingest time.
-# Reassemble: confirmed empirically after re-ingest with unpatched plugin.
+# Reassemble: /hand wrist camera blob.
 # DROID:      3 cameras available; wrist_left picked because it tracks the
 #             grasp point through the whole trajectory with minimal occlusion.
 # Fractal:    single image topic from the RLDS parser.
-# MML:        no RGB in the ROS bag (only tactile+audio), kept None.
 IMAGE_TOPIC_PER_DATASET: Dict[str, Optional[str]] = {
     "reassemble":  "/hand",
     "droid":       "/observation/images/wrist_left",
-    "mml":         None,
     "fractal_rt1": "/step/observation/image",
 }
 
@@ -102,7 +84,6 @@ GRIPPER_THRESHOLD_PER_DATASET: Dict[str, float] = {
     "reassemble":  0.025,  # Franka 2-finger position (meters); range 0..0.04, midpoint
     "droid":       0.5,    # normalized [0,1] bimodal at 0 and 1
     "fractal_rt1": 0.5,    # already quasi-binary; clip to {0,1}
-    "mml":         0.5,    # Allegro mean; kept for API symmetry, not used in current pipeline
 }
 
 
@@ -214,28 +195,6 @@ def project_droid(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def project_mml(df: pd.DataFrame) -> pd.DataFrame:
-    """MML -> canonical. Pose from /iiwa/eePose; gripper = mean of the 16
-    Allegro joints (crude, but needed to collapse to a single scalar)."""
-    out = pd.DataFrame({"timestamp_ns": df["timestamp_ns"].to_numpy()})
-    pcols = _pose_cols("/iiwa/eePose")
-    for canon, src in zip(
-        ("ee_pos_x", "ee_pos_y", "ee_pos_z",
-         "ee_rot_qx", "ee_rot_qy", "ee_rot_qz", "ee_rot_qw"),
-        ("pos_x", "pos_y", "pos_z", "rot_qx", "rot_qy", "rot_qz", "rot_qw"),
-    ):
-        col = pcols[src]
-        out[canon] = pd.to_numeric(df[col], errors="coerce") if col in df.columns else np.nan
-
-    grip_col = "/allegro_hand_right/joint_states.robot_joint.positions"
-    if grip_col in df.columns:
-        raw = _mean_of_array_col(df[grip_col])
-        out["gripper_state"] = _binarize_gripper(raw, "mml")
-    else:
-        out["gripper_state"] = np.nan
-    return out
-
-
 def project_fractal_rt1(df: pd.DataFrame) -> pd.DataFrame:
     """Fractal RT1 -> canonical. Pose from base_pose_tool_reached, gripper
     from gripper_closed (float scalar)."""
@@ -261,7 +220,6 @@ def project_fractal_rt1(df: pd.DataFrame) -> pd.DataFrame:
 PROJECTORS = {
     "reassemble": project_reassemble,
     "droid": project_droid,
-    "mml": project_mml,
     "fractal_rt1": project_fractal_rt1,
 }
 

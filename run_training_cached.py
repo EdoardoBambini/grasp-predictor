@@ -1,33 +1,5 @@
-"""
-Training entry point for the LateFusionLSTM grasp failure classifier over the
-CNN feature cache produced by scripts/precompute_cnn_features.py.
-
-A single model is trained on all 3 datasets together (reassemble + droid +
-fractal_rt1) and evaluated per dataset. The per-dataset AUC and F1 in
-results.json are the cross format generalization evidence: heterogeneous
-storage (HDF5 / h5 ROS bag / TFRecord, divergent topic naming, mixed image
-codecs) is canonicalized upstream by the Mosaico SDK to a uniform 50 Hz
-DataFrame, so the same trained classifier applies to each format with no
-dataset-specific code path.
-
-Split: 70/15/15 stratified per dataset on sequence label, deterministic on
-sorted(glob), seed 42.
-
-Usage:
-    py -3.13 run_training_cached.py \
-        --train-datasets reassemble,droid,fractal_rt1 \
-        --test-datasets  reassemble,droid,fractal_rt1 \
-        --epochs 30 --batch-size 64 --lr 1e-3 --weight-decay 1e-3 \
-        --dropout 0.35 --hidden 256 --stride 50 --use-scheduler \
-        --num-workers 0 --loss bce --label-smoothing 0.0 \
-        --kin-noise-std 0.02 --weighted-sampler \
-        --ipca-components 64 --late-fusion --attn-pool \
-        --swa-start-epoch 8 --cache-dir results/cnn_cache_spatial \
-        --cnn-dim 360 --output-dir results/multimodal_indist
-
-Smoke test:
-    py -3.13 run_training_cached.py --smoke
-"""
+"""Train the LateFusionLSTM jointly on all datasets in the CNN feature cache,
+evaluate per dataset. Stratified 70/15/15 split, seed 42."""
 from __future__ import annotations
 
 import argparse
@@ -53,7 +25,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from models.cached_dataset import CachedFeatureDataset
 from models.cached_lstm import CachedFeatureLSTM, LateFusionLSTM
-from models.trainer import FocalLoss, get_device, set_seed
+from models.trainer import get_device, set_seed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -154,12 +126,12 @@ def split_indistribution(
     """Per-dataset 70/15/15 split STRATIFIED on sequence-level label
     (label.max() > 0.5). Deterministic via sklearn random_state=SEED.
 
-    Why stratified (vs the previous positional split): for DROID and Fractal
-    every frame in a sequence has the same label, so positional sorting can
-    leave train/val/test with wildly different positive ratios. For Reassemble
-    (n=48) only 3 sequences have label.max()==0 (pure success), so positional
-    split could put zero successes in val or test. Stratify ensures each fold
-    sees both classes proportionally.
+    Stratification matters because for DROID and Fractal every frame in
+    a sequence has the same label, so a non-stratified split could leave
+    train/val/test with very different positive ratios. For Reassemble
+    (n=48) only 3 sequences have label.max()==0 (pure success), so a
+    non-stratified split could put zero successes in val or test.
+    Stratify ensures each fold sees both classes proportionally.
 
     Returns (train_paths, val_paths, test_paths, test_per_ds, val_per_ds).
     The per-dataset dicts enable per-domain threshold tuning + breakdown.

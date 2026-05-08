@@ -6,8 +6,7 @@ pandas>=2.0.0
 scikit-learn>=1.4.0
 Pillow>=10.0.0
 
-# Closed loop demo and plotting
-mujoco>=3.6.0
+# Deliverable rendering and training plots
 opencv-python>=4.8.0
 matplotlib>=3.8.0
 seaborn>=0.13.0
@@ -17,7 +16,6 @@ h5py>=3.10.0
 psycopg2-binary>=2.9.0
 pyarrow>=22.0.0
 rich>=13.0.0
-tqdm>=4.66.0
 
 # Mosaico SDK with the manipulation pack (local editable install):
 # pip install -e ../mosaico-sdk-py

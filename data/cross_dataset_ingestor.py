@@ -1,11 +1,5 @@
-"""
-Cross-dataset ingestor. For each Mosaico-ingested dataset (reassemble, droid,
-fractal_rt1; mml is supported as a label adapter but not used in the released
-pipeline) pulls the sequences via the SDK, syncs them at 50 Hz (SyncHold),
-projects them onto the canonical 8-feature schema (extended to 15 with the
-finite-difference derivatives) and attaches the grasp_failure label. Only
-Mosaico SDK, no direct h5 / TFRecord / bag reads.
-"""
+"""Pull sequences from Mosaico, sync at 50 Hz, project onto the 15-feature
+canonical schema, attach the grasp_failure label."""
 from __future__ import annotations
 
 import logging
@@ -116,9 +110,7 @@ class CrossDatasetIngestor:
             # carried verbatim by ffill.
             # Streaming pattern as documented by the SDK: build the
             # SyncTransformer once, then transform each chunk in turn so the
-            # internal state carries values across chunk boundaries. The
-            # earlier ``concat + fit_transform`` workaround was here to dodge
-            # an ndim bug in ``_prepare_data`` that has since been patched.
+            # internal state carries values across chunk boundaries.
             sync = SyncTransformer(target_fps=self._fps, policy=SyncHold())
 
             dense_parts: List[pd.DataFrame] = []

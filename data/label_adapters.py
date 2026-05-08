@@ -1,10 +1,5 @@
-"""
-Per-dataset label adapters: each one returns a grasp_failure Series
-(0=success, 1=failure) aligned to the df timestamps. All adapters work on
-data already pulled via Mosaico (no h5 / parquet / bag side-cars). Reassemble
-labels come from /grasp_failure_label (populated by either the patched
-ingestion plugin or scripts/backfill_reassemble_labels.py).
-"""
+"""Per-dataset adapters returning a grasp_failure Series (0=success, 1=failure)
+aligned to the df timestamps."""
 from __future__ import annotations
 
 import logging
@@ -26,22 +21,19 @@ def _empty_label(df: pd.DataFrame, value: int = 0) -> pd.Series:
 def label_reassemble(df: pd.DataFrame, seq_handler) -> pd.Series:
     """Label from /grasp_failure_label (built from segments_info in the h5).
 
-    Supports two ingestion schemas:
+    Supports two ontology schemas, checked in order:
 
-    1) Boolean ontology (current cache, populated by the legacy Reassemble
-       plugin or scripts/backfill_reassemble_labels.py): columns
-       /grasp_failure_label.boolean.data or /grasp_failure_label.data, value
-       interpreted as 1=failure, 0=success.
+    1) Boolean ontology. Columns /grasp_failure_label.boolean.data or
+       /grasp_failure_label.data, value interpreted as 1=failure, 0=success.
+       Populated either by the SDK plugin or by
+       scripts/backfill_reassemble_labels.py.
 
-    2) SegmentInfo ontology (new alchemy plugin, post mosaico-alchemy PR for
-       SegmentInfo): column /grasp_failure_label.segment_info.success, value
-       interpreted as 1=success, 0=failure (polarity inverted vs Boolean).
+    2) SegmentInfo ontology. Column /grasp_failure_label.segment_info.success,
+       value interpreted as 1=success, 0=failure (polarity inverted vs Boolean).
 
-    Schema 1 is checked first for backwards compatibility with the existing
-    cache. Schema 2 takes over automatically once Reassemble is re-ingested
-    with the new plugin.
+    The first schema with a present column wins.
     """
-    # Schema 1: legacy Boolean ontology.
+    # Schema 1: Boolean ontology.
     bool_candidates = [
         "/grasp_failure_label.boolean.data",
         "/grasp_failure_label.data",
@@ -68,8 +60,8 @@ def label_reassemble(df: pd.DataFrame, seq_handler) -> pd.Series:
     # training run can skip past incomplete sequences without losing the rest.
     logger.warning(
         "Reassemble label topic column not found in df. "
-        "Expected /grasp_failure_label.boolean.data (legacy) or "
-        "/grasp_failure_label.segment_info.success (new alchemy plugin). "
+        "Expected /grasp_failure_label.boolean.data or "
+        "/grasp_failure_label.segment_info.success. "
         "Falling back to success."
     )
     return _empty_label(df, value=0)
@@ -84,13 +76,6 @@ def label_droid(df: pd.DataFrame, seq_handler) -> pd.Series:
         return _empty_label(df, value=0)
     failure = 0 if bool(is_ok) else 1
     return _empty_label(df, value=failure)
-
-
-def label_mml(df: pd.DataFrame, seq_handler) -> pd.Series:
-    """MML -> teleop demos, no failure annotation. Everything is labeled
-    success (label noise is intentional; MML only contributes domain coverage
-    when included)."""
-    return _empty_label(df, value=0)
 
 
 def label_fractal_rt1(df: pd.DataFrame, seq_handler) -> pd.Series:
@@ -126,7 +111,6 @@ def label_fractal_rt1(df: pd.DataFrame, seq_handler) -> pd.Series:
 ADAPTERS: Dict[str, callable] = {
     "reassemble": label_reassemble,
     "droid": label_droid,
-    "mml": label_mml,
     "fractal_rt1": label_fractal_rt1,
 }
 

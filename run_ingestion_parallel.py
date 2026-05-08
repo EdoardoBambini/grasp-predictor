@@ -1,15 +1,4 @@
-"""
-Parallel re-ingestion of the Reassemble dataset via mosaicod.
-
-Splits the .h5 sequences across N worker processes, each with its own
-MosaicoClient connection. Every worker refreshes the existing-sequence
-list before starting a new file, so concurrent workers never duplicate work.
-
-Usage:
-    py -3.13 run_ingestion_parallel.py
-    py -3.13 run_ingestion_parallel.py --workers 4 \\
-        --dataset-root "D:/datasets/reassemble/data"
-"""
+"""Parallel re-ingestion of the Reassemble dataset via mosaicod."""
 
 from __future__ import annotations
 

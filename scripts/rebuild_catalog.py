@@ -1,17 +1,5 @@
-"""
-Rebuild the mosaicod PostgreSQL catalog from existing MinIO blob data.
-
-Reads manifest xl.meta files and parquet metadata from the MinIO store and
-inserts the corresponding entries into sequence_t, session_t, topic_t,
-chunk_t so that mosaicod can serve the data without re-ingestion. Used
-when the catalog DB is wiped but the blob store on disk is intact.
-
-Usage:
-    python scripts/rebuild_catalog.py
-    python scripts/rebuild_catalog.py \
-        --store-root "D:/mosaico-store/mosaico" \
-        --dsn "postgresql://postgres:password@localhost:5432/mosaico"
-"""
+"""Rebuild the mosaicod Postgres catalog from existing MinIO blobs. Used
+after a catalog DB wipe when the blob store on disk is still intact."""
 import argparse
 import json
 import logging

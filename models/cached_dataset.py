@@ -1,12 +1,5 @@
-"""
-Dataset wrapping pre-computed window tensors (kin float32, cnn fp16, label
-float32). Pairs with CachedFeatureLSTM / LateFusionLSTM and run_training_cached.py.
-
-Optional kinematic-side noise augmentation: small Gaussian on X_kin only.
-The CNN cache is read-only on disk, so visual augmentation is not available
-without recomputing it. The cache trades augmentation flexibility for the
-ability to train the temporal head in minutes on CPU.
-"""
+"""Dataset over pre-computed window tensors (kin float32, cnn fp16, label
+float32). Optional Gaussian noise on the kin stream only."""
 from __future__ import annotations
 
 import numpy as np

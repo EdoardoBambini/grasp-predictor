@@ -1,6 +1,25 @@
+<div align="center">
+  <picture>
+    <a href="https://mosaico.dev"><img alt="Mosaico logo" src="https://mosaico.dev/github-hero.webp" width="600px"></a>
+  </picture>
+</div>
+<br/>
+
+<p align="center">
+  <a href="https://discord.gg/mwQtFnsckE"><img src="https://shields.io/discord/1413199575442784266?color=%235865f2" alt="discord" /></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="python version"/></a>
+  <a href="https://docs.mosaico.dev"><img src="https://img.shields.io/badge/-%20Documentation-%23bd38b4?style=flat&logo=readthedocs&logoColor=white&labelColor=gray" alt="documentation"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/mosaico-labs/mosaico/pkgs/container/mosaicod"><img src="https://img.shields.io/badge/mosaicod-v0.4.0-orange" /></a>
+  <a href="https://pypi.org/project/mosaicolabs"><img src="https://img.shields.io/pypi/v/mosaicolabs?color=blue" /></a>
+  <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.2+-ee4c2c?logo=pytorch&logoColor=white" alt="pytorch" /></a>
+</p>
+
 # Grasp Integrity Predictor
 
-Binary grasp failure classifier for robotic manipulation sequences, trained cross format on three heterogeneous datasets via [Mosaico](https://mosaico.dev), the data platform for Physical AI, and validated in closed loop in MuJoCo.
+Binary grasp failure classifier for robotic manipulation sequences, trained cross format on three heterogeneous datasets via [Mosaico](https://mosaico.dev), the data platform for Physical AI, and validated by overlaying its per-frame predictions on top of held-out recorded videos, with an active-control variant that aborts the playback at the first threshold crossing.
 
 > Case study built on **Mosaico** ([mosaico.dev](https://mosaico.dev), [github.com/mosaico-labs/mosaico](https://github.com/mosaico-labs/mosaico)). Manipulation plugins live in [`mosaico-alchemy`](https://github.com/mosaico-labs/mosaico-alchemy). Full writeup in [`BLOG_POST.md`](BLOG_POST.md).
 
@@ -10,7 +29,7 @@ A single LateFusionLSTM is trained jointly on three robotic manipulation dataset
 
 Same code path for all three formats: `MosaicoClient -> QuerySequence -> SequenceHandler -> DataFrameExtractor -> SyncTransformer(50 Hz, SyncHold) -> feature_mapper.project -> add_derived_features -> label_adapters`. The Mosaico SDK exposes the catalog as a uniform DataFrame source over Apache Arrow, so application code never reads `.h5`, `.tfrecord` or ROS bag files directly.
 
-A closed loop demo in MuJoCo on a Franka Emika Panda runs a four act sequence (two passive, two active control) where the trained classifier triggers an `ABORT` mid lift if its predicted failure probability crosses the validation tuned threshold of 0.806; the gripper opens, the cube falls under physics.
+The deliverable is a four act sequence (two passive monitoring, two active control) rendered directly on top of the recorded source videos. In passive acts the classifier's per-frame `P(failure)` is overlaid as a HUD timeline while the recording plays uninterrupted; in active acts the classifier is granted authority to halt the playback at the first `P >= 0.806` crossing, freezing the source frame at the moment of intervention with an `ABORT INITIATED BY MOSAICO ML` overlay. All four sequences come from the held-out 15 percent test split.
 
 ## Final Results
 
@@ -51,38 +70,36 @@ grasp_integrity_predictor/
     cached_lstm.py                  LateFusionLSTM with attention pool over time
     trainer.py                      FocalLoss + reproducibility helpers
   scripts/
-    audit_cache.py                  Per dataset distribution audit on the .npz cache
-    precompute_cnn_features.py      One shot CNN feature cache (idempotent)
-    refresh_kin_in_cache.py         Refresh kin part only via Mosaico (no CNN re run)
-    shadow_loop_demo.py             MuJoCo demo video generator
-    ingest_reassemble.py            Reassemble ingest entry point
-    ingest_droid_parallel.py        DROID parallel ingest
-    ingest_generic.py               Generic ingest entry point (auto plugin selection)
-    backfill_reassemble_labels.py   Legacy label backfill (pre patched plugin)
-    check_label_topic.py            Sanity check for the Reassemble label topic
-    check_catalog_images.py         Sanity check that image topics decode
-    rebuild_catalog.py              Rebuild Postgres catalog from MinIO blobs
-    run_v9.sh                       Wrapper for the released training command
-  simulation/
-    assets/mujoco_menagerie/franka_emika_panda/
-                                    Franka Panda asset + grasp_lab.xml scene
+    audit_cache.py                          Per dataset distribution audit on the .npz cache
+    precompute_cnn_features.py              One shot CNN feature cache (idempotent)
+    refresh_kin_in_cache.py                 Refresh kin part only via Mosaico (no CNN re run)
+    video_overlay_demo.py                   Per-act renderer (source video + P trace HUD)
+    concat_acts.py                          Stitches per-act MP4s into the final deliverable
+    ingest_reassemble.py                    Reassemble ingest entry point
+    ingest_droid_parallel.py                DROID parallel ingest
+    ingest_generic.py                       Generic ingest entry point (auto plugin selection)
+    backfill_reassemble_labels.py           Reassemble label injector (boolean.data from segments_info)
+    check_label_topic.py                    Sanity check for the Reassemble label topic
+    check_catalog_images.py                 Sanity check that image topics decode
+    rebuild_catalog.py                      Rebuild Postgres catalog from MinIO blobs
+    run_v9.sh                               Wrapper for the released training command
+    find_test_split.py                      Generates the per-dataset stratified test split
   results/
-    multimodal_indist_v9_sharp/     Released model + scaler + metrics + acts JSON
-      checkpoints/best_model.pt     LateFusionLSTM trained weights
-      scaler.npz                    kin/cnn z score + IPCA 64 components
-      results.json                  hyperparameters + per dataset test metrics
-      acts_v9_2parts.json           demo configuration consumed by shadow_loop_demo.py
-      *.png                         ROC, loss curves, confusion matrix
-    module_c_franka/
-      shadow_loop_v9_run3_v7.mp4    final demo video (31 MB)
-    audit_cache.json                gripper / label audit snapshot
-    refresh_kin_summary.json        refresh_kin_in_cache.py output snapshot
+    multimodal_indist_v9_sharp/             Released model + scaler + metrics + acts JSON
+      checkpoints/best_model.pt             LateFusionLSTM trained weights
+      scaler.npz                            kin/cnn z score + IPCA 64 components
+      results.json                          hyperparameters + per dataset test metrics
+      acts_v9_2parts_reassemble_test.json   demo configuration consumed by video_overlay_demo.py
+      *.png                                 ROC, loss curves, confusion matrix
+    video_overlay_demo/
+      module_c_deliverable.mp4              final deliverable (1280x720 30 fps, 64.5 s)
+    test_split.json                         stratified per-dataset 70/15/15 split (seed 42)
   docker/
-    compose-training.yml            Postgres + MinIO + mosaicod stack
-  run_training_cached.py            Training entry point
-  run_ingestion_parallel.py         Parallel Reassemble ingest entry point
-  BLOG_POST.md                      Case study writeup
-  README.md                         This file
+    compose-training.yml                    Postgres + MinIO + mosaicod stack
+  run_training_cached.py                    Training entry point
+  run_ingestion_parallel.py                 Parallel Reassemble ingest entry point
+  BLOG_POST.md                              Case study writeup
+  README.md                                 This file
   pyproject.toml
   requirements.txt
 ```
@@ -91,9 +108,8 @@ grasp_integrity_predictor/
 
 - Python 3.13 (see [`pyproject.toml`](pyproject.toml)).
 - A running `mosaicod` daemon reachable on `127.0.0.1:6726` with the three datasets ingested.
-- The `mosaicolabs` Python package. Two integration paths are supported (see [Reassemble label schema](#reassemble-label-schema) below): the SDK fork that emits the `/grasp_failure_label` topic via the `Boolean` ontology, or the new `mosaico-alchemy` plugin that emits the same topic via the `SegmentInfo` ontology.
-- MuJoCo >= 3.6 (Franka Panda asset bundled in `simulation/assets/mujoco_menagerie/franka_emika_panda/`).
-- CPU only friendly: training takes about 6 minutes on a Ryzen 7 once the CNN cache is built.
+- The `mosaicolabs` Python package and the `mosaico-alchemy` ingestion plugins. The Reassemble plugin emits the `/grasp_failure_label` topic via either the `Boolean` ontology or the `SegmentInfo` ontology (see [Reassemble label schema](#reassemble-label-schema) below).
+- CPU only friendly: training takes about 6 minutes on a Ryzen 7 once the CNN cache is built; rendering the deliverable takes another 1 to 2 minutes.
 
 ## Setup
 
@@ -119,32 +135,40 @@ docker compose -f docker/compose-training.yml up -d
 
 Two entry points depending on whether the starting point is the released model or raw data.
 
-### Path A: Load the Released model and render the demo (about 5 minutes)
+### Path A: Load the released model and render the deliverable (about 2 minutes)
 
-The repository ships the trained model and the demo video so the result can be verified without re running the full pipeline:
+The repository ships the trained model, the test split definition, and the final deliverable so the result can be verified without re running the full pipeline:
 
 ```
 results/multimodal_indist_v9_sharp/
-  checkpoints/best_model.pt    LateFusionLSTM trained weights (108547 params)
-  scaler.npz                   kin / cnn z score + IPCA 64 components
-  results.json                 hyperparameters + per dataset test metrics
-  acts_v9_2parts.json          demo configuration
-  *.png                        ROC, loss curves, confusion matrix
-results/module_c_franka/
-  shadow_loop_v9_run3_v7.mp4   final demo video (31 MB)
+  checkpoints/best_model.pt                  LateFusionLSTM trained weights (108547 params)
+  scaler.npz                                 kin / cnn z score + IPCA 64 components
+  results.json                               hyperparameters + per dataset test metrics
+  acts_v9_2parts_reassemble_test.json        demo configuration
+  *.png                                      ROC, loss curves, confusion matrix
+results/test_split.json                      stratified per-dataset 70/15/15 split (seed 42)
+results/video_overlay_demo/
+  module_c_deliverable.mp4                   final deliverable (1280x720 30 fps, 64.5 s)
 ```
 
-To re render the demo from the Released model:
+To re render the deliverable from the released model (overlays the per-frame `P(failure)` on top of the source video for each act, then concatenates the four acts with title cards):
 
 ```bash
-python scripts/shadow_loop_demo.py \
-  --acts-config results/multimodal_indist_v9_sharp/acts_v9_2parts.json \
+# 1. Render the four per-act MP4s into results/video_overlay_demo/act_*.mp4
+python -m scripts.video_overlay_demo \
+  --acts-config results/multimodal_indist_v9_sharp/acts_v9_2parts_reassemble_test.json \
   --model-dir   results/multimodal_indist_v9_sharp \
-  --output      results/module_c_franka/shadow_loop_v9_run3_v7.mp4 \
   --threshold   0.806 \
-  --passive-acts 2 \
-  --no-pip
+  --out-dir     results/video_overlay_demo
+
+# 2. Stitch them into the final 64.5 s deliverable with intro / title / outro cards
+python -m scripts.concat_acts \
+  --in-dir      results/video_overlay_demo \
+  --acts-config results/multimodal_indist_v9_sharp/acts_v9_2parts_reassemble_test.json \
+  --out         results/video_overlay_demo/module_c_deliverable.mp4
 ```
+
+Acts are configured via the JSON at `results/multimodal_indist_v9_sharp/acts_v9_2parts_reassemble_test.json`: each entry binds a held-out test sequence to an `offset` (in 50 Hz cache frames) and a `duration` (seconds), with an optional `camera` field for Reassemble acts (`"hand"` for the wrist camera, `"hama1"` / `"hama2"` for the third-person side and front views available in the source HDF5). Failure acts at index >= 2 trigger the active-control branch and freeze the source frame at the first `P >= threshold` crossing.
 
 ### Path B: Full reproduction from raw datasets (about 3 hours total)
 
@@ -170,13 +194,13 @@ python scripts/check_label_topic.py
 python scripts/check_catalog_images.py
 ```
 
-If `check_label_topic.py` reports the Reassemble label topic missing (legacy catalog ingested with the unpatched plugin), run the backfill once:
+If `check_label_topic.py` reports the Reassemble label topic missing, populate it from the source HDF5 `segments_info` field:
 
 ```bash
 python scripts/backfill_reassemble_labels.py --h5-root "D:/datasets/reassemble/data"
 ```
 
-See [Reassemble label schema](#reassemble-label-schema) below for the new alchemy plugin path.
+See [Reassemble label schema](#reassemble-label-schema) below for the column paths the loader supports.
 
 #### 2. Pre cache CNN features (about 3 hours, one shot)
 
@@ -188,7 +212,7 @@ python scripts/precompute_cnn_features.py
 
 The script is idempotent: existing `.npz` files are skipped on rerun.
 
-If the catalog is updated after the cache is built (for example after the mosaico-alchemy `SegmentInfo` PR is merged and Reassemble is re ingested), refresh only the kin part of the cache via Mosaico without re running the expensive CNN forward pass:
+If the catalog is updated after the cache is built, refresh only the kin part of the cache via Mosaico without re running the expensive CNN forward pass:
 
 ```bash
 python scripts/refresh_kin_in_cache.py
@@ -236,19 +260,19 @@ python run_training_cached.py \
   --swa-start-epoch 8
 ```
 
-#### 4. Render the closed loop demo (about 6 minutes)
+#### 4. Render the deliverable (about 2 minutes)
 
-See Path A above. The demo plays four DROID test split sequences: two in passive monitoring (the classifier observes, the robot does not react) and two in active control (the classifier has authority to abort). Act 2 (passive failure) uses a sub optimal `grip_close` value of 100 instead of 50, so the cube is grabbed but slips during the lift due to MuJoCo physics; the resulting drop is a consequence of the static parameter, not a scripted event.
+See Path A above. The deliverable plays four held-out test sequences end to end: two passive monitoring acts (the classifier observes, the recording plays uninterrupted) and two active control acts (the classifier has authority to halt the playback at the first `P >= 0.806` crossing). The two failure acts are two distinct 12 s windows of the same Reassemble Insert-Ethernet recording, capturing two failure points along the same trajectory: the passive failure act is centered on the alignment failure downstream of the grasp, the active failure act is centered on the upstream grasp event itself, where the abort authority freezes the source frame with the object plainly held in the gripper.
 
 ## Reassemble Label Schema
 
-Two ingestion schemas are supported by [`data/label_adapters.py:label_reassemble`](data/label_adapters.py), checked in order:
+Two column paths are supported by [`data/label_adapters.py:label_reassemble`](data/label_adapters.py), checked in order:
 
-1. **Legacy `Boolean` ontology** (current cache, populated either by the patched SDK plugin or by `scripts/backfill_reassemble_labels.py`). Column path: `/grasp_failure_label.boolean.data` (or `.data` for very old catalogs). Polarity: `True = failure`.
+1. **`Boolean` ontology.** Column path: `/grasp_failure_label.boolean.data`. Polarity: `True = failure`. Populated either by the SDK plugin or by `scripts/backfill_reassemble_labels.py`.
 
-2. **New `SegmentInfo` ontology** (post `mosaico-alchemy` PR for `SegmentInfo`). Column path: `/grasp_failure_label.segment_info.success`. Polarity is inverted: `True = success`, so the failure label is computed as `1 - success`. The `is_terminal` flag distinguishes the start (False) and end (True) boundary of each segment, and `parent_action` carries the optional nesting for `low_level` sub segments.
+2. **`SegmentInfo` ontology.** Column path: `/grasp_failure_label.segment_info.success`. Polarity inverted: `True = success`, so the failure label is computed as `1 - success`. The `is_terminal` flag distinguishes the start (False) and end (True) boundary of each segment, and `parent_action` carries the optional nesting for `low_level` sub segments.
 
-Schema 1 takes priority. Schema 2 kicks in automatically once Reassemble is re ingested with the new alchemy plugin. Existing `.npz` caches keep working without rebuild; re ingested catalogs trigger the new path on the next `refresh_kin_in_cache.py` run.
+The first path with a present column wins; the loader falls back to the second.
 
 ## Key Design Choices
 
@@ -272,9 +296,4 @@ Schema 1 takes priority. Schema 2 kicks in automatically once Reassemble is re i
 - Reassemble dataset (HDF5 manipulation recordings)
 - DROID dataset (h5 / ROS bag layout, large scale teleoperated manipulation)
 - Fractal RT-1 dataset (RLDS / TFRecord, RT-1 robotics transformer rollouts)
-- Franka Emika Panda from MuJoCo Menagerie
 - MobileNetV3 Small ImageNet weights via `torchvision`
-
-## Backup Convention
-
-Local backups before destructive changes are written to `Desktop/backup_<project>_<date>/` and excluded from git via `.gitignore`. Cache directories (`results/cnn_cache_*`) are also gitignored because they are heavy and fully regeneratable from the Mosaico catalog via `scripts/precompute_cnn_features.py` and `scripts/refresh_kin_in_cache.py`.

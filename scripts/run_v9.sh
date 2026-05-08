@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# Wrapper for the canonical training command of the released model. Run it
-# with no argument to reproduce the released run; pass an override to switch
-# to one of the alternative configurations.
-#
-# Hardware target: a single CPU machine (16 GB RAM, no GPU). The CNN cache
-# must already exist under results/cnn_cache_spatial/ (see
-# scripts/precompute_cnn_features.py and scripts/refresh_kin_in_cache.py).
+# Wrapper around run_training_cached.py: `released` reproduces the released run,
+# the other targets are ablations. The CNN cache must already exist.
 
 set -euo pipefail
 

@@ -1,15 +1,4 @@
-"""
-Generic ingest entry point: points ManipulationRunner at any data root and
-lets the runner auto-pick the right plugin (Reassemble HDF5, DROID h5,
-Fractal RT-1 TFRecord).
-
-Skips sequences already in the catalog by sequence_name uniqueness, so
-re-running on the same root only ingests new files.
-
-Usage:
-    python scripts/ingest_generic.py --data-root "E:/datasets/droid/data"
-    python scripts/ingest_generic.py --data-root "E:/datasets/fractal20220817_data/0.1.0"
-"""
+"""Generic ingest entry point: ManipulationRunner with auto-plugin selection."""
 from __future__ import annotations
 
 import argparse

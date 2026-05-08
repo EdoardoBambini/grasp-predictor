@@ -1,28 +1,5 @@
-"""
-Refresh the `kin` (and `label`) array of each .npz in the CNN feature cache,
-re-running the Mosaico chain with the current feature_mapper.py (binarized
-gripper). The `cnn` array is left untouched, avoiding the 12-24h CNN forward
-pass that the full precompute_cnn_features.py would re-run.
-
-For each .npz under results/cnn_cache_spatial/{dsid}/<name>.npz:
-  1. Load the existing cnn array (kept verbatim).
-  2. Re-run Mosaico: sequence_handler -> DataFrameExtractor ->
-     SyncTransformer(50 Hz, SyncHold) -> feature_mapper.project ->
-     add_derived_features -> label_adapters.
-  3. Check that kin.shape[0] == cnn.shape[0] (deterministic sync).
-  4. Save the .npz with refreshed kin and label, original cnn.
-
-Idempotent: skips sequences whose gripper_state is already binary {0, 1}.
-
-MinIO load is light because no images and no CNN forward pass are involved
-(5 to 15 seconds per sequence, vs 30 to 60 seconds for the full precompute).
-Estimated 3 to 10 hours overnight for the 2405 cached sequences.
-
-Usage:
-    py -3 scripts/refresh_kin_in_cache.py
-    py -3 scripts/refresh_kin_in_cache.py --datasets droid --force
-    py -3 scripts/refresh_kin_in_cache.py --sleep 0.5
-"""
+"""Refresh the `kin` and `label` arrays of each cached .npz from Mosaico,
+keeping the existing `cnn` array verbatim. Idempotent."""
 from __future__ import annotations
 
 import argparse

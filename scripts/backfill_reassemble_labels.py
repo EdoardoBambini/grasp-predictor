@@ -1,21 +1,5 @@
-"""
-One-time backfill: copy `segments_info` from each Reassemble .h5 into Mosaico
-as a new topic `grasp_failure_label` (Boolean, 1=failure, 0=success).
-
-The ReassemblePlugin does not persist segments_info in sequence_metadata.
-After running this script the training pipeline pulls labels via MosaicoClient
-only; the .h5 side-car is never touched from training.
-
-Only needed for catalogs populated by the unpatched plugin: the patched plugin
-(see README) emits the label topic inline at ingest time.
-
-Idempotent: skips sequences that already have `/grasp_failure_label`.
-
-Usage:
-    python scripts/backfill_reassemble_labels.py
-    python scripts/backfill_reassemble_labels.py \
-        --h5-root "D:/datasets/reassemble/data" --host 127.0.0.1 --port 6726
-"""
+"""Backfill `grasp_failure_label` (Boolean) into each Reassemble sequence by
+reading `segments_info` from the side-car .h5. Idempotent."""
 from __future__ import annotations
 
 import argparse

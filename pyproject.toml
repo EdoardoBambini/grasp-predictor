@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "grasp-integrity-predictor"
 version = "1.0.0"
-description = "Binary grasp failure classifier and closed loop MuJoCo demo, case study for the Mosaico Labs Physical AI Bridge"
+description = "Binary grasp failure classifier with overlay-on-real-video deliverable, case study for the Mosaico Labs Physical AI Bridge"
 authors = []
 readme = "README.md"
 
@@ -19,18 +19,16 @@ pandas = ">=2.0.0"
 scikit-learn = ">=1.4.0"          # IncrementalPCA, ROC, F1, stratified split
 Pillow = ">=10.0.0"               # JPEG decode in feature_mapper
 
-# Closed loop demo and plotting
-mujoco = ">=3.6.0"                # Franka Panda scene + offscreen renderer
-opencv-python = ">=4.8.0"         # HUD overlay + VideoWriter
+# Deliverable rendering and training plots
+opencv-python = ">=4.8.0"         # source video read + HUD overlay + VideoWriter
 matplotlib = ">=3.8.0"
 seaborn = ">=0.13.0"
 
 # Ingestion utilities
-h5py = ">=3.10.0"                 # Reassemble label backfill
+h5py = ">=3.10.0"                 # Reassemble label backfill + video blob extract
 psycopg2-binary = ">=2.9.0"       # catalog rebuild
-pyarrow = ">=22.0.0"              # catalog rebuild + parquet metadata
+pyarrow = ">=22.0.0"              # catalog rebuild + DROID parquet metadata
 rich = ">=13.0.0"                 # multiprocess ingest console
-tqdm = ">=4.66.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0.0"

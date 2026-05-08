@@ -1,6 +1,0 @@
-[
-  {"label": "SUCCESS", "target": "cube", "sequence": "results/cnn_cache_spatial/droid/droid_file-000_ep168.npz",  "offset": 0, "duration": 12.0},
-  {"label": "FAILURE", "target": "cube", "grip_close": 100, "sequence": "results/cnn_cache_spatial/droid/droid_file-000_ep461.npz", "offset": 0, "duration": 12.0},
-  {"label": "SUCCESS", "target": "cube", "sequence": "results/cnn_cache_spatial/droid/droid_file-001_ep1382.npz", "offset": 0, "duration": 12.0},
-  {"label": "FAILURE", "target": "cube", "sequence": "results/cnn_cache_spatial/droid/droid_file-000_ep233.npz",  "offset": 0, "duration": 12.0}
-]

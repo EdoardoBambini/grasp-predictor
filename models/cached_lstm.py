@@ -1,11 +1,4 @@
-"""
-LSTMs that consume pre-computed CNN embeddings + kinematic features. The
-visual backbone is frozen and runs once during the CNN pre-cache, so this
-module contains only the temporal head.
-
-Input: x_kin (B, T, 15) float32, x_cnn (B, T, cnn_dim) float32.
-Output: logits (B,). Pair with BCEWithLogitsLoss or FocalLoss.
-"""
+"""Temporal head over pre-computed CNN embeddings + kinematic features."""
 from __future__ import annotations
 
 import torch

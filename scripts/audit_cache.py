@@ -1,22 +1,4 @@
-"""
-Audit of the CNN + kin cache. Two diagnostics are computed per dataset:
-
-  1. Gripper distribution across datasets. Raw gripper_state is recorded on
-     incompatible scales (Reassemble in meters, DROID normalized, Fractal
-     quasi-binary), so the raw values would leak dataset identity through
-     the cross-dataset bridge. The histogram informs the per-dataset
-     binarization thresholds in data/feature_mapper.py.
-
-  2. Label granularity. DROID and Fractal carry episode-level labels
-     constant per sequence; Reassemble varies frame by frame.
-
-Iterates results/cnn_cache_spatial/{reassemble,droid,fractal_rt1}/*.npz,
-computes per-dataset aggregate statistics, and writes a JSON summary to
-results/audit_cache.json. Pure numpy, no Mosaico calls.
-
-Usage:
-    python scripts/audit_cache.py
-"""
+"""Per-dataset gripper distribution + label granularity audit over the .npz cache."""
 from __future__ import annotations
 
 import json

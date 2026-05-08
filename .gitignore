@@ -1,45 +1,24 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.egg-info/
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
 
 # Virtual environments
 .venv/
 .venv-*/
 venv/
-env/
 
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
-
-# Runtime output
-outputs/
-
-# Pipeline-generated caches (regeneratable from Mosaico via scripts/precompute_cnn_features.py
-# and scripts/refresh_kin_in_cache.py). Excluded from git because of size. The small model
-# artifact (results/multimodal_indist_v9_sharp/checkpoints/best_model.pt) and the final
-# demo video (results/module_c_franka/shadow_loop_v9_run3_v7.mp4) ARE tracked.
+# Heavy Mosaico-derived caches; regeneratable from the catalog via
+# scripts/precompute_cnn_features.py + scripts/refresh_kin_in_cache.py.
+# best_model.pt and module_c_deliverable.mp4 ARE tracked.
 results/cnn_cache_*/
 
-# Render and training logs
+# Per-act intermediate MP4s; only the concatenated deliverable is tracked.
+results/video_overlay_demo/act_*.mp4
+
+# Training + render logs
 *.log
 
-# Local backups (created outside the repo by `cp -r` before destructive changes)
-backup_*/
-
-# Internal working notes (kept out of public repo)
-RIEPILOGO_*.md
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Editor
-.idea/
-.vscode/
-*.swp
+# Local backups created outside the repo before destructive changes
+*.backup-*/

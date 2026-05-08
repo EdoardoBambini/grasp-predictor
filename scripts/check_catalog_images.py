@@ -1,12 +1,4 @@
-"""
-Probe the Mosaico catalog: for each dataset, list the topics on the first
-healthy sequence and flag the image-like ones. Use before a multimodal
-training run to confirm the catalog has the image topics expected by
-data/feature_mapper.py::IMAGE_TOPIC_PER_DATASET.
-
-Usage:
-    python scripts/check_catalog_images.py
-"""
+"""List topics on a healthy sequence per dataset and flag the image-like ones."""
 from __future__ import annotations
 
 import sys
