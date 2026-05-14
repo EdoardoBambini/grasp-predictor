@@ -1,4 +1,4 @@
-# Grasp Integrity Predictor
+# Grasp Integrity Predictor, built on Mosaico
 
 [![CI](https://github.com/EdoardoBambini/grasp-predictor/actions/workflows/ci.yml/badge.svg)](https://github.com/EdoardoBambini/grasp-predictor/actions/workflows/ci.yml) [![Built on Mosaico ≥ 0.4](https://img.shields.io/badge/built%20on-Mosaico%20%E2%89%A5%200.4-1f77b4.svg)](https://github.com/mosaico-labs/mosaico) [![PyTorch ≥ 2.2](https://img.shields.io/badge/PyTorch-%E2%89%A5%202.2-ee4c2c?logo=pytorch&logoColor=white)](https://pytorch.org/) [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 
