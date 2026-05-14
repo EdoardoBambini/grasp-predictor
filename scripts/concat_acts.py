@@ -6,6 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
+import os
+
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -18,16 +20,24 @@ TITLE_DURATION_S = 2.5
 INTRO_DURATION_S = 3.0
 OUTRO_DURATION_S = 3.5
 
-FONT_REG = "C:/Windows/Fonts/segoeui.ttf"
-FONT_BOLD = "C:/Windows/Fonts/segoeuib.ttf"
-FONT_LIGHT = "C:/Windows/Fonts/segoeuil.ttf"
+# Default font paths (Windows). On Linux/macOS the renderer falls back to
+# PIL's bundled default font; override via environment variables if you have
+# specific fonts you'd like to use (e.g. DejaVu on Linux).
+FONT_REG = os.environ.get("FONT_REG", "C:/Windows/Fonts/segoeui.ttf")
+FONT_BOLD = os.environ.get("FONT_BOLD", "C:/Windows/Fonts/segoeuib.ttf")
+FONT_LIGHT = os.environ.get("FONT_LIGHT", "C:/Windows/Fonts/segoeuil.ttf")
 _font_cache: dict = {}
 
 
 def _font(path: str, size: int):
     key = (path, size)
     if key not in _font_cache:
-        _font_cache[key] = ImageFont.truetype(path, size)
+        try:
+            _font_cache[key] = ImageFont.truetype(path, size)
+        except (OSError, IOError):
+            # Path doesn't exist (e.g. Linux/macOS without Windows fonts).
+            # Fall back to PIL's bundled default so the renderer still runs.
+            _font_cache[key] = ImageFont.load_default()
     return _font_cache[key]
 
 
@@ -134,19 +144,17 @@ def main():
 
     print(f"[1/3] intro card")
     intro = render_card([
-        ("Module C", 86, FONT_LIGHT, (240, 240, 250), 60),
-        ("Closed-Loop Failure Prediction Demo", 32, FONT_REG, (180, 200, 230), 48),
-        ("4 test sequences   |   passive monitoring + active abort",
+        ("Grasp Integrity Predictor", 64, FONT_LIGHT, (240, 240, 250), 56),
+        ("Per-frame failure probability overlaid on held-out test sequences",
+         26, FONT_REG, (180, 200, 230), 44),
+        ("4 acts   |   passive monitoring",
          18, FONT_REG, (140, 170, 200), 0),
     ], INTRO_DURATION_S)
     for f in fade_in_out(intro, 8):
         vw.write(f)
 
     print(f"[2/3] writing acts")
-    part_titles = ["PART 1 - Passive Monitoring",
-                   "PART 1 - Passive Monitoring",
-                   "PART 2 - Active Control (Abort Authority)",
-                   "PART 2 - Active Control (Abort Authority)"]
+    part_titles = ["Passive Monitoring"] * len(acts)
 
     for i, act in enumerate(acts):
         seq_path = act["sequence"]
@@ -180,7 +188,7 @@ def main():
 
     print(f"[3/3] outro card")
     outro = render_card([
-        ("Mosaico SDK", 86, FONT_LIGHT, (240, 240, 250), 60),
+        ("Built on Mosaico", 64, FONT_LIGHT, (240, 240, 250), 50),
         ("Cross-format ingest   |   sync 50 Hz   |   canonical schema",
          24, FONT_REG, (180, 200, 230), 44),
         ("HDF5  +  Parquet  +  TFRecord   →   single LateFusionLSTM",

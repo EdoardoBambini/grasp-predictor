@@ -1,5 +1,5 @@
 """Render per-act MP4s: source video frames overlaid with the classifier's
-per-frame P(failure) and an optional abort-on-threshold freeze."""
+per-frame P(failure) trace, in passive-monitoring mode."""
 from __future__ import annotations
 
 import argparse
@@ -35,9 +35,12 @@ SAFE_COLOR = (60, 220, 80)
 WARN_COLOR = (60, 165, 240)
 ALARM_COLOR = (60, 80, 240)
 
-FONT_REG = "C:/Windows/Fonts/segoeui.ttf"
-FONT_BOLD = "C:/Windows/Fonts/segoeuib.ttf"
-FONT_MONO = "C:/Windows/Fonts/consola.ttf"
+# Default font paths (Windows). On Linux/macOS the renderer falls back to
+# PIL's bundled default font; override via environment variables if you have
+# specific fonts you'd like to use (e.g. DejaVu on Linux).
+FONT_REG = os.environ.get("FONT_REG", "C:/Windows/Fonts/segoeui.ttf")
+FONT_BOLD = os.environ.get("FONT_BOLD", "C:/Windows/Fonts/segoeuib.ttf")
+FONT_MONO = os.environ.get("FONT_MONO", "C:/Windows/Fonts/consola.ttf")
 
 
 def _font_cache():
@@ -45,7 +48,12 @@ def _font_cache():
     def get(path: str, size: int):
         key = (path, size)
         if key not in cache:
-            cache[key] = ImageFont.truetype(path, size)
+            try:
+                cache[key] = ImageFont.truetype(path, size)
+            except (OSError, IOError):
+                # Path doesn't exist (e.g. Linux/macOS without Windows fonts).
+                # Fall back to PIL's bundled default so the renderer still runs.
+                cache[key] = ImageFont.load_default()
         return cache[key]
     return get
 
@@ -150,12 +158,11 @@ def _bgr_to_rgb_tuple(c: tuple[int, int, int]) -> tuple[int, int, int]:
 
 def render_canvas(video_frame: np.ndarray, *, t_sec: float, dur_sec: float,
                   p: float, threshold: float, p_history: list, gt_label: int,
-                  abort_at: float | None, show_gt: bool, dataset: str,
+                  show_gt: bool, dataset: str,
                   seq_name: str, act_label: str, part_label: str) -> np.ndarray:
     canvas = np.full((CANVAS_H, CANVAS_W, 3), BG_COLOR, dtype=np.uint8)
     p_color = color_for_p(p, threshold)
     is_alarm = p >= threshold
-    in_abort = abort_at is not None and t_sec >= abort_at
 
     # === video area ===
     video_y0 = BANNER_H
@@ -170,7 +177,7 @@ def render_canvas(video_frame: np.ndarray, *, t_sec: float, dur_sec: float,
     vy0 = video_y0 + (VIDEO_H - disp_h) // 2
     canvas[vy0:vy0 + disp_h, vx0:vx0 + disp_w] = disp
 
-    border_color = ALARM_COLOR if (is_alarm or in_abort) else (60, 70, 100)
+    border_color = ALARM_COLOR if is_alarm else (60, 70, 100)
     cv2.rectangle(canvas, (vx0 - 2, vy0 - 2),
                   (vx0 + disp_w + 1, vy0 + disp_h + 1), border_color, 2)
 
@@ -269,36 +276,19 @@ def render_canvas(video_frame: np.ndarray, *, t_sec: float, dur_sec: float,
                   fill=(200, 200, 220), width=1)
 
     canvas = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-
-    if in_abort:
-        ov = canvas.copy()
-        cv2.rectangle(ov, (0, 0), (CANVAS_W, video_y1), (0, 0, 200), -1)
-        canvas = cv2.addWeighted(ov, 0.18, canvas, 0.82, 0)
-        pil2 = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
-        d2 = ImageDraw.Draw(pil2)
-        msg = "ABORT INITIATED BY MOSAICO ML"
-        msg_font = _font(FONT_BOLD, 36)
-        bbox = d2.textbbox((0, 0), msg, font=msg_font)
-        msg_w = bbox[2] - bbox[0]
-        msg_x = (CANVAS_W - msg_w) // 2
-        msg_y = video_y0 + 24
-        d2.rectangle([msg_x - 18, msg_y - 8, msg_x + msg_w + 18, msg_y + 50],
-                     fill=(0, 0, 0))
-        d2.text((msg_x, msg_y), msg, font=msg_font, fill=(255, 255, 255))
-        canvas = cv2.cvtColor(np.array(pil2), cv2.COLOR_RGB2BGR)
-
     return canvas
 
 
-def process_act(act: dict, model_bundle, *, threshold: float, active_abort: bool,
-                out_path: str, part_label: str) -> int:
+def process_act(act: dict, model_bundle, *, threshold: float,
+                out_path: str, part_label: str,
+                reassemble_h5_root: str, droid_parquet_root: str) -> int:
     seq_path = act["sequence"]
     offset = int(act["offset"])
     duration = float(act["duration"])
     label = act["label"]
 
     print(f"\n[act {label}] sequence={seq_path}, offset={offset}, "
-          f"duration={duration}s, abort={active_abort}")
+          f"duration={duration}s")
 
     cache = np.load(seq_path)
     kin_seq = cache["kin"].astype(np.float32)
@@ -312,7 +302,7 @@ def process_act(act: dict, model_bundle, *, threshold: float, active_abort: bool
     video_start = 0
     if is_reassemble:
         date = Path(seq_path).stem.replace("reassemble_", "")
-        h5_path = f"D:/datasets/reassemble/data/{date}.h5"
+        h5_path = os.path.join(reassemble_h5_root, f"{date}.h5")
         camera = act.get("camera", "hand")
         cap, tmp = open_reassemble_video(h5_path, camera)
         tmp_files.append(tmp)
@@ -325,7 +315,7 @@ def process_act(act: dict, model_bundle, *, threshold: float, active_abort: bool
         stem = Path(seq_path).stem
         ep_id = int(stem.split("_ep")[-1])
         file_stem = stem.split("_ep")[0].replace("droid_", "")
-        parquet_path = f"E:/datasets/droid/data/chunk-000/{file_stem}.parquet"
+        parquet_path = os.path.join(droid_parquet_root, "chunk-000", f"{file_stem}.parquet")
         cap, ep_mp4_start = open_droid_video(parquet_path, ep_id, "exterior_1_left")
         dataset = "DROID  (in-the-wild manipulation)"
         seq_name = stem
@@ -349,8 +339,6 @@ def process_act(act: dict, model_bundle, *, threshold: float, active_abort: bool
 
     p_history = []
     last_p = 0.0
-    abort_at = None
-    aborted_freeze_frame = None
     (model, kin_mean, kin_std, cnn_mean, cnn_std,
      ipca_c, ipca_m, _) = model_bundle
     is_failure_act = label.upper().startswith("FAIL")
@@ -372,20 +360,11 @@ def process_act(act: dict, model_bundle, *, threshold: float, active_abort: bool
         p_history.append(p)
         gt = int(label_seq[min(npz_idx, len(label_seq) - 1)] > 0.5)
 
-        if active_abort and is_failure_act and abort_at is None and p >= threshold:
-            abort_at = t_sec
-            print(f"  [ACTIVE ABORT] triggered at t={t_sec:.2f}s, P={p:.3f}")
-
         video_frame_idx = video_start + int(round(t_sec * video_fps))
         cap.set(cv2.CAP_PROP_POS_FRAMES, video_frame_idx)
         ok, frame = cap.read()
         if not ok or frame is None:
             frame = np.zeros((src_h, src_w, 3), dtype=np.uint8)
-
-        if abort_at is not None and t_sec >= abort_at:
-            if aborted_freeze_frame is None:
-                aborted_freeze_frame = frame.copy()
-            frame = aborted_freeze_frame.copy()
 
         # The Reassemble label topic stores only single-frame boundary
         # markers (failure on at the start of a failed segment, off again
@@ -399,7 +378,7 @@ def process_act(act: dict, model_bundle, *, threshold: float, active_abort: bool
         canvas = render_canvas(
             frame, t_sec=t_sec, dur_sec=duration,
             p=p, threshold=threshold, p_history=p_history,
-            gt_label=gt_for_display, abort_at=abort_at,
+            gt_label=gt_for_display,
             show_gt=(t_sec >= duration - 1.5),
             dataset=dataset, seq_name=seq_name, act_label=label,
             part_label=part_label,
@@ -423,6 +402,12 @@ def main():
     ap.add_argument("--act-idx", type=int, default=-1)
     ap.add_argument("--threshold", type=float, default=THRESHOLD_DEFAULT)
     ap.add_argument("--out-dir", default="results/video_overlay_demo")
+    ap.add_argument("--reassemble-h5-root", default="./data/reassemble",
+                    help="Directory containing per-recording .h5 files for Reassemble. "
+                         "Each sequence resolves to <root>/<date>.h5.")
+    ap.add_argument("--droid-parquet-root", default="./data/droid",
+                    help="Directory containing DROID parquet shards. Resolves to "
+                         "<root>/chunk-000/<file_stem>.parquet.")
     args = ap.parse_args()
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
@@ -434,21 +419,20 @@ def main():
     with open(args.acts_config) as f:
         acts = json.load(f)
 
-    part_labels = ["PART 1 - Passive Monitoring",
-                   "PART 1 - Passive Monitoring",
-                   "PART 2 - Active Control (Abort Authority)",
-                   "PART 2 - Active Control (Abort Authority)"]
+    # All acts run in passive-monitoring mode: the classifier observes, the
+    # source video plays uninterrupted regardless of the per-frame P(failure).
+    part_labels = ["Passive Monitoring"] * len(acts)
 
     print(f"\n[3/3] rendering")
     indices = range(len(acts)) if args.act_idx < 0 else [args.act_idx]
     for i in indices:
         act = acts[i]
-        active_abort = (i >= 2)
         out_path = os.path.join(args.out_dir, f"act_{i+1}_{act['label']}.mp4")
         process_act(act, model_bundle, threshold=args.threshold,
-                    active_abort=active_abort,
                     out_path=out_path,
-                    part_label=part_labels[i])
+                    part_label=part_labels[i],
+                    reassemble_h5_root=args.reassemble_h5_root,
+                    droid_parquet_root=args.droid_parquet_root)
     print("\ndone.")
 
 

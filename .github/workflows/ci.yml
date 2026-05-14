@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke-test:
+    name: Smoke test (torch + released checkpoint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install minimal test dependencies
+        # The smoke test only needs torch + numpy + pytest. mosaicolabs and
+        # other heavy ingestion dependencies are intentionally NOT installed
+        # in CI to keep the workflow fast and isolated.
+        run: |
+          python -m pip install --upgrade pip
+          pip install "torch>=2.2.0" "numpy>=2.0.0" pytest
+
+      - name: Run smoke test
+        run: pytest tests/ -v
+
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff
+        run: ruff check . --select=E9,F63,F7,F82 --statistics
+        # E9   syntax errors
+        # F63  invalid format string
+        # F7   imports inside try-except
+        # F82  undefined name
+        # Soft pass: only fail on real correctness issues, not stylistic nits.

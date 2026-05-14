@@ -3,22 +3,37 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
 
 # Virtual environments
 .venv/
 .venv-*/
 venv/
+env/
+.env
 
 # Heavy Mosaico-derived caches; regeneratable from the catalog via
 # scripts/precompute_cnn_features.py + scripts/refresh_kin_in_cache.py.
-# best_model.pt and module_c_deliverable.mp4 ARE tracked.
+# best_model.pt IS tracked; the video deliverable is regenerated from scratch.
 results/cnn_cache_*/
 
-# Per-act intermediate MP4s; only the concatenated deliverable is tracked.
-results/video_overlay_demo/act_*.mp4
+# All MP4s in the overlay-demo dir (the deliverable is meant to be regenerated, not committed)
+results/video_overlay_demo/*.mp4
 
 # Training + render logs
 *.log
+
+# ML experiment trackers
+wandb/
+runs/
+lightning_logs/
+
+# OS noise
+.DS_Store
+Thumbs.db
 
 # Local backups created outside the repo before destructive changes
 *.backup-*/

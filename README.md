@@ -1,37 +1,42 @@
-<div align="center">
-  <picture>
-    <a href="https://mosaico.dev"><img alt="Mosaico logo" src="https://mosaico.dev/github-hero.webp" width="600px"></a>
-  </picture>
-</div>
-<br/>
-
-<p align="center">
-  <a href="https://discord.gg/mwQtFnsckE"><img src="https://shields.io/discord/1413199575442784266?color=%235865f2" alt="discord" /></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="python version"/></a>
-  <a href="https://docs.mosaico.dev"><img src="https://img.shields.io/badge/-%20Documentation-%23bd38b4?style=flat&logo=readthedocs&logoColor=white&labelColor=gray" alt="documentation"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/mosaico-labs/mosaico/pkgs/container/mosaicod"><img src="https://img.shields.io/badge/mosaicod-v0.4.0-orange" /></a>
-  <a href="https://pypi.org/project/mosaicolabs"><img src="https://img.shields.io/pypi/v/mosaicolabs?color=blue" /></a>
-  <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.2+-ee4c2c?logo=pytorch&logoColor=white" alt="pytorch" /></a>
-</p>
-
 # Grasp Integrity Predictor
 
-Binary grasp failure classifier for robotic manipulation sequences, trained cross format on three heterogeneous datasets via [Mosaico](https://mosaico.dev), the data platform for Physical AI, and validated by overlaying its per-frame predictions on top of held-out recorded videos, with an active-control variant that aborts the playback at the first threshold crossing.
+[![CI](https://github.com/EdoardoBambini/grasp-predictor/actions/workflows/ci.yml/badge.svg)](https://github.com/EdoardoBambini/grasp-predictor/actions/workflows/ci.yml) [![Built on Mosaico ≥ 0.4](https://img.shields.io/badge/built%20on-Mosaico%20%E2%89%A5%200.4-1f77b4.svg)](https://github.com/mosaico-labs/mosaico) [![PyTorch ≥ 2.2](https://img.shields.io/badge/PyTorch-%E2%89%A5%202.2-ee4c2c?logo=pytorch&logoColor=white)](https://pytorch.org/) [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 
-> Case study built on **Mosaico** ([mosaico.dev](https://mosaico.dev), [github.com/mosaico-labs/mosaico](https://github.com/mosaico-labs/mosaico)). Manipulation plugins live in [`mosaico-alchemy`](https://github.com/mosaico-labs/mosaico-alchemy). Full writeup in [`BLOG_POST.md`](BLOG_POST.md).
+A cross-format grasp failure classifier trained on three heterogeneous manipulation datasets (Reassemble, DROID, Fractal RT-1). The pipeline uses [Mosaico](https://github.com/mosaico-labs/mosaico) as the data platform, so the application code never reads `.h5`, `.tfrecord` or ROS bag files directly.
+
+A single `LateFusionLSTM` consumes 15 canonical kinematic features and a 64-dim visual descriptor per timestep (MobileNetV3 Small layer 6, post-IPCA) over 50-frame sliding windows (1 s at 50 Hz), and emits a calibrated failure probability per window.
+
+Full technical writeup in [`BLOG_POST.md`](BLOG_POST.md).
+
+## Quickstart
+
+```bash
+git clone https://github.com/EdoardoBambini/grasp-predictor.git
+cd grasp-predictor
+
+# 1. Create venv + install Python dependencies
+bash scripts/setup.sh
+source .venv/bin/activate          # Linux/macOS
+# .venv\Scripts\activate            # Windows
+
+# 2. Render the deliverable video from the released model
+#    Needs Reassemble .h5 files + DROID parquet shards locally:
+REASSEMBLE_H5_ROOT="/path/to/reassemble" \
+DROID_PARQUET_ROOT="/path/to/droid" \
+  bash scripts/render_video.sh
+```
+
+Output lands at `results/video_overlay_demo/module_c_deliverable.mp4`. For a full reproduction from raw datasets (ingest → CNN cache → train → render, ~3 hours), see `scripts/run_full_pipeline.sh`.
 
 ## Overview
 
-A single LateFusionLSTM is trained jointly on three robotic manipulation datasets ingested through the Mosaico SDK: **Reassemble** (HDF5), **DROID** (h5 / ROS bag like) and **Fractal RT-1** (TFRecord, RLDS). The model fuses 15 canonical kinematic features with a precomputed visual stream (MobileNetV3 Small, layer 6 + `AdaptiveMaxPool2d(3)`, reduced from 360 to 64 components by IncrementalPCA) and emits a calibrated failure probability per 50 frame window (1 second at 50 Hz).
+A single LateFusionLSTM is trained jointly on three robotic manipulation datasets ingested through Mosaico: **Reassemble** (HDF5), **DROID** (h5 / ROS bag like) and **Fractal RT-1** (TFRecord, RLDS). The model fuses 15 canonical kinematic features with a precomputed visual stream (MobileNetV3 Small, layer 6 + `AdaptiveMaxPool2d(3)`, reduced from 360 to 64 components by IncrementalPCA) and emits a calibrated failure probability per 50 frame window (1 second at 50 Hz).
 
-Same code path for all three formats: `MosaicoClient -> QuerySequence -> SequenceHandler -> DataFrameExtractor -> SyncTransformer(50 Hz, SyncHold) -> feature_mapper.project -> add_derived_features -> label_adapters`. The Mosaico SDK exposes the catalog as a uniform DataFrame source over Apache Arrow, so application code never reads `.h5`, `.tfrecord` or ROS bag files directly.
+Same code path for all three formats: `MosaicoClient -> QuerySequence -> SequenceHandler -> DataFrameExtractor -> SyncTransformer(50 Hz, SyncHold) -> feature_mapper.project -> add_derived_features -> label_adapters`. Mosaico exposes the catalog as a uniform DataFrame source over Apache Arrow, so application code never reads `.h5`, `.tfrecord` or ROS bag files directly.
 
-The deliverable is a four act sequence (two passive monitoring, two active control) rendered directly on top of the recorded source videos. In passive acts the classifier's per-frame `P(failure)` is overlaid as a HUD timeline while the recording plays uninterrupted; in active acts the classifier is granted authority to halt the playback at the first `P >= 0.806` crossing, freezing the source frame at the moment of intervention with an `ABORT INITIATED BY MOSAICO ML` overlay. All four sequences come from the held-out 15 percent test split.
+Per-frame `P(failure)` can then be overlaid on top of held-out recorded videos as a visual demonstration of the classifier's behavior.
 
-## Final Results
+### Final Results
 
 Test set, stratified per dataset 70 / 15 / 15 split (seed 42), threshold tuned on the validation split:
 
@@ -57,6 +62,8 @@ Trainable parameters: 108547. Training time: about 6 minutes on Ryzen 7 CPU (no 
 - **Loss**: `BCEWithLogitsLoss` with `pos_weight=4.522` (auto from class balance), no label smoothing.
 - **Regularization**: `kin_noise_std=0.02`, `WeightedRandomSampler` on the training split, dropout 0.35, gradient clip 1.0, SWA from epoch 8, `ReduceLROnPlateau`.
 
+Detailed motivation for the design choices, training curves, and per-dataset ROC analysis are in [`BLOG_POST.md`](BLOG_POST.md).
+
 ## Repository Structure
 
 ```
@@ -74,7 +81,7 @@ grasp_integrity_predictor/
     precompute_cnn_features.py              One shot CNN feature cache (idempotent)
     refresh_kin_in_cache.py                 Refresh kin part only via Mosaico (no CNN re run)
     video_overlay_demo.py                   Per-act renderer (source video + P trace HUD)
-    concat_acts.py                          Stitches per-act MP4s into the final deliverable
+    concat_acts.py                          Stitches per-act MP4s into a single video
     ingest_reassemble.py                    Reassemble ingest entry point
     ingest_droid_parallel.py                DROID parallel ingest
     ingest_generic.py                       Generic ingest entry point (auto plugin selection)
@@ -89,29 +96,20 @@ grasp_integrity_predictor/
       checkpoints/best_model.pt             LateFusionLSTM trained weights
       scaler.npz                            kin/cnn z score + IPCA 64 components
       results.json                          hyperparameters + per dataset test metrics
-      acts_v9_2parts_reassemble_test.json   demo configuration consumed by video_overlay_demo.py
+      acts_v9_2parts_reassemble_test.json   per-act overlay configuration
       *.png                                 ROC, loss curves, confusion matrix
-    video_overlay_demo/
-      module_c_deliverable.mp4              final deliverable (1280x720 30 fps, 64.5 s)
     test_split.json                         stratified per-dataset 70/15/15 split (seed 42)
   docker/
     compose-training.yml                    Postgres + MinIO + mosaicod stack
   run_training_cached.py                    Training entry point
   run_ingestion_parallel.py                 Parallel Reassemble ingest entry point
-  BLOG_POST.md                              Case study writeup
+  BLOG_POST.md                              Technical writeup
   README.md                                 This file
   pyproject.toml
   requirements.txt
 ```
 
-## Requirements
-
-- Python 3.13 (see [`pyproject.toml`](pyproject.toml)).
-- A running `mosaicod` daemon reachable on `127.0.0.1:6726` with the three datasets ingested.
-- The `mosaicolabs` Python package and the `mosaico-alchemy` ingestion plugins. The Reassemble plugin emits the `/grasp_failure_label` topic via either the `Boolean` ontology or the `SegmentInfo` ontology (see [Reassemble label schema](#reassemble-label-schema) below).
-- CPU only friendly: training takes about 6 minutes on a Ryzen 7 once the CNN cache is built; rendering the deliverable takes another 1 to 2 minutes.
-
-## Setup
+## Installation
 
 ```bash
 python -m venv .venv
@@ -120,71 +118,63 @@ source .venv/bin/activate          # Linux/macOS
 
 pip install --upgrade pip
 pip install -r requirements.txt
-
-# Editable install of the Mosaico SDK (point to your local clone)
-pip install -e <path-to-mosaico-sdk-py>
 ```
 
-The Mosaico daemon (Postgres + MinIO + `mosaicod`) is provisioned via Docker Compose:
+The Mosaico daemon (Postgres + MinIO + `mosaicod`) is needed only for full reproduction from raw datasets (Path B below). It is provisioned via Docker Compose:
 
 ```bash
 docker compose -f docker/compose-training.yml up -d
 ```
 
-## Reproducing the Case Study
+Path A (loading the released model) does **not** require the daemon, only the local `.pt` and `.npz` files under `results/multimodal_indist_v9_sharp/`.
+
+## Usage
 
 Two entry points depending on whether the starting point is the released model or raw data.
 
-### Path A: Load the released model and render the deliverable (about 2 minutes)
+### Path A: Load the released model and render the per-act overlays (about 2 minutes)
 
-The repository ships the trained model, the test split definition, and the final deliverable so the result can be verified without re running the full pipeline:
+The repository ships the trained model, the test split definition, and the per-act overlay configuration so the result can be inspected without re-running the full pipeline:
 
 ```
 results/multimodal_indist_v9_sharp/
   checkpoints/best_model.pt                  LateFusionLSTM trained weights (108547 params)
   scaler.npz                                 kin / cnn z score + IPCA 64 components
   results.json                               hyperparameters + per dataset test metrics
-  acts_v9_2parts_reassemble_test.json        demo configuration
+  acts_v9_2parts_reassemble_test.json        per-act overlay configuration
   *.png                                      ROC, loss curves, confusion matrix
 results/test_split.json                      stratified per-dataset 70/15/15 split (seed 42)
-results/video_overlay_demo/
-  module_c_deliverable.mp4                   final deliverable (1280x720 30 fps, 64.5 s)
 ```
 
-To re render the deliverable from the released model (overlays the per-frame `P(failure)` on top of the source video for each act, then concatenates the four acts with title cards):
+Render the per-act overlays (each one overlays the per-frame `P(failure)` on top of the source video for one held-out test sequence):
 
 ```bash
-# 1. Render the four per-act MP4s into results/video_overlay_demo/act_*.mp4
 python -m scripts.video_overlay_demo \
   --acts-config results/multimodal_indist_v9_sharp/acts_v9_2parts_reassemble_test.json \
   --model-dir   results/multimodal_indist_v9_sharp \
   --threshold   0.806 \
   --out-dir     results/video_overlay_demo
-
-# 2. Stitch them into the final 64.5 s deliverable with intro / title / outro cards
-python -m scripts.concat_acts \
-  --in-dir      results/video_overlay_demo \
-  --acts-config results/multimodal_indist_v9_sharp/acts_v9_2parts_reassemble_test.json \
-  --out         results/video_overlay_demo/module_c_deliverable.mp4
 ```
 
-Acts are configured via the JSON at `results/multimodal_indist_v9_sharp/acts_v9_2parts_reassemble_test.json`: each entry binds a held-out test sequence to an `offset` (in 50 Hz cache frames) and a `duration` (seconds), with an optional `camera` field for Reassemble acts (`"hand"` for the wrist camera, `"hama1"` / `"hama2"` for the third-person side and front views available in the source HDF5). Failure acts at index >= 2 trigger the active-control branch and freeze the source frame at the first `P >= threshold` crossing.
+Acts are configured via the JSON at `results/multimodal_indist_v9_sharp/acts_v9_2parts_reassemble_test.json`: each entry binds a held-out test sequence to an `offset` (in 50 Hz cache frames) and a `duration` (seconds), with an optional `camera` field for Reassemble acts (`"hand"` for the wrist camera, `"hama1"` / `"hama2"` for the third-person side and front views available in the source HDF5).
 
 ### Path B: Full reproduction from raw datasets (about 3 hours total)
 
 #### 1. Ingest the three datasets into Mosaico
 
+The `--dataset-root` / `--data-root` flags below expect the local path where you downloaded each dataset. The placeholders in angle brackets are intentional; replace them with absolute paths on your machine.
+
 ```bash
 # Reassemble (149 .h5 files), parallel ingestion
 python run_ingestion_parallel.py \
-  --workers 4 --dataset-root "D:/datasets/reassemble/data"
+  --workers 4 --dataset-root "<path-to-reassemble-data>"
 
 # DROID (h5 / ROS bag like)
-python scripts/ingest_droid_parallel.py --data-root "D:/datasets/droid/data"
+python scripts/ingest_droid_parallel.py --data-root "<path-to-droid-data>"
 
 # Fractal RT-1 (TFRecord, RLDS)
 python scripts/ingest_generic.py \
-  --data-root "D:/datasets/fractal20220817_data/0.1.0"
+  --data-root "<path-to-fractal20220817-data>"
 ```
 
 Sanity check the catalog before continuing:
@@ -197,7 +187,7 @@ python scripts/check_catalog_images.py
 If `check_label_topic.py` reports the Reassemble label topic missing, populate it from the source HDF5 `segments_info` field:
 
 ```bash
-python scripts/backfill_reassemble_labels.py --h5-root "D:/datasets/reassemble/data"
+python scripts/backfill_reassemble_labels.py --h5-root "<path-to-reassemble-data>"
 ```
 
 See [Reassemble label schema](#reassemble-label-schema) below for the column paths the loader supports.
@@ -260,9 +250,33 @@ python run_training_cached.py \
   --swa-start-epoch 8
 ```
 
-#### 4. Render the deliverable (about 2 minutes)
+#### 4. Render the per-act overlays (about 2 minutes)
 
-See Path A above. The deliverable plays four held-out test sequences end to end: two passive monitoring acts (the classifier observes, the recording plays uninterrupted) and two active control acts (the classifier has authority to halt the playback at the first `P >= 0.806` crossing). The two failure acts are two distinct 12 s windows of the same Reassemble Insert-Ethernet recording, capturing two failure points along the same trajectory: the passive failure act is centered on the alignment failure downstream of the grasp, the active failure act is centered on the upstream grasp event itself, where the abort authority freezes the source frame with the object plainly held in the gripper.
+See Path A above.
+
+## Dependencies
+
+| Tool | Version | Role |
+|---|---|---|
+| Python | 3.13+ | runtime |
+| [PyTorch](https://pytorch.org/) | 2.2+ | model + training |
+| torchvision | 0.17+ | MobileNetV3 Small backbone for the CNN pre-cache |
+| [mosaicolabs](https://pypi.org/project/mosaicolabs/) | 0.4.0+ | Python SDK for [Mosaico](https://mosaico.dev), the data platform that unifies the three datasets behind a single DataFrame interface |
+| numpy | 2.0+ | tensor / array math |
+| pandas | 2.0+ | DataFrame contract from the SDK |
+| scikit-learn | 1.4+ | IncrementalPCA, ROC, F1, stratified split |
+| Pillow | 10.0+ | JPEG decode in `feature_mapper` |
+| opencv-python | 4.8+ | source video read + HUD overlay + VideoWriter |
+| matplotlib | 3.8+ | training plots |
+| seaborn | 0.13+ | confusion matrix |
+| h5py | 3.10+ | Reassemble label backfill + video blob extract |
+| psycopg2-binary | 2.9+ | catalog rebuild |
+| pyarrow | 22.0+ | catalog rebuild + DROID parquet metadata |
+| rich | 13.0+ | multiprocess ingest console |
+
+Ingestion plugins for the three datasets live in [`mosaico-alchemy`](https://github.com/mosaico-labs/mosaico-alchemy) (Mosaico's manipulation plugin pack).
+
+CPU only friendly: training takes about 6 minutes on a Ryzen 7 once the CNN cache is built; rendering the per-act overlays takes another 1 to 2 minutes.
 
 ## Reassemble Label Schema
 
@@ -283,17 +297,16 @@ The first path with a present column wins; the loader falls back to the second.
 - **Late fusion with attention pool over time.** kin (15 -> BiLSTM 64) and visual (64 -> BiLSTM 64) pass through separate BiLSTMs. Within each stream a learned softmax attention pools across the 50 window timesteps (replaces the last timestep readout). Output streams are concatenated only at the linear head. Adapted to episode level supervision where any frame in the window is informative.
 - **BCE with auto pos_weight, no label smoothing.** Calibrated probability output, with class separation (P fail mean - P succ mean) of 0.173 on the test split and P(failure) covering the full [0.027, 0.999] range.
 - **Stratified per dataset 70 / 15 / 15 split.** Built with sklearn `train_test_split(stratify=label_per_seq)` per dataset, seed 42, with a positional fallback when a class has fewer than 2 samples (Reassemble n=48 has only 3 pure success sequences).
-- **50 Hz SyncHold resampling.** `SyncTransformer` with forward fill policy, safe across booleans / floats / arrays, keeps quaternions valid (interpolation would break unit norm).
+- **50 Hz SyncHold resampling.** Mosaico's `SyncTransformer` with forward fill policy, safe across booleans / floats / arrays, keeps quaternions valid (interpolation would break unit norm).
 - **Sliding windows:** `seq_len = 50` (1 second at 50 Hz), `stride = 50` (no overlap), label = max over the window.
 - **Pre cache + LSTM only training.** The visual encoder is frozen, its forward pass is computed once and reused across N training runs. Without this, training the head N times on CPU is unfeasible.
 
-## Citations
+## Citations and Tools Used
 
-- Case study writeup: [`BLOG_POST.md`](BLOG_POST.md)
-- Mosaico, the data platform for Physical AI: [mosaico.dev](https://mosaico.dev), [github.com/mosaico-labs/mosaico](https://github.com/mosaico-labs/mosaico)
-- Manipulation plugins: [`mosaico-alchemy`](https://github.com/mosaico-labs/mosaico-alchemy)
-- Mosaico SDK: `mosaicolabs` Python package
-- Reassemble dataset (HDF5 manipulation recordings)
-- DROID dataset (h5 / ROS bag layout, large scale teleoperated manipulation)
-- Fractal RT-1 dataset (RLDS / TFRecord, RT-1 robotics transformer rollouts)
-- MobileNetV3 Small ImageNet weights via `torchvision`
+- Technical writeup: [`BLOG_POST.md`](BLOG_POST.md)
+- **Mosaico**: open-source data platform for Physical AI ([mosaico.dev](https://mosaico.dev), [github.com/mosaico-labs/mosaico](https://github.com/mosaico-labs/mosaico)). Python SDK package `mosaicolabs`.
+- **mosaico-alchemy**: manipulation plugin pack with ingestion plugins for Reassemble, DROID, and Fractal RT-1 ([github.com/mosaico-labs/mosaico-alchemy](https://github.com/mosaico-labs/mosaico-alchemy)).
+- **Reassemble dataset**: HDF5 manipulation recordings.
+- **DROID dataset**: large scale teleoperated manipulation (h5 / ROS bag layout).
+- **Fractal RT-1 dataset**: RT-1 robotics transformer rollouts (RLDS / TFRecord format).
+- **MobileNetV3 Small**: ImageNet weights via `torchvision`.

@@ -1,15 +1,26 @@
 [tool.poetry]
 name = "grasp-integrity-predictor"
 version = "1.0.0"
-description = "Binary grasp failure classifier with overlay-on-real-video deliverable, case study for the Mosaico Labs Physical AI Bridge"
-authors = []
+description = "Cross-format binary grasp failure classifier (LateFusionLSTM) over three manipulation datasets unified through the Mosaico data platform."
+authors = ["Edoardo Bambini"]
 readme = "README.md"
+homepage = "https://github.com/EdoardoBambini/grasp-predictor"
+repository = "https://github.com/EdoardoBambini/grasp-predictor"
+keywords = ["robotics", "grasp-failure", "physical-ai", "mosaico", "lstm", "case-study"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
 
 [tool.poetry.dependencies]
 python = ">=3.13,<4"
 
-# Mosaico SDK (local editable install)
-mosaicolabs = { path = "../mosaico-sdk-py", develop = true }
+# Mosaico SDK: Python client for the Mosaico data platform
+mosaicolabs = ">=0.4.0"
 
 # Core ML stack
 torch = ">=2.2.0"
