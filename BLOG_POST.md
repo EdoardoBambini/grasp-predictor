@@ -1,4 +1,4 @@
-# A Cross Format Grasp Integrity Predictor
+# A Cross Format Grasp Integrity Predictor built on Mosaico
 
 How I trained a single `LateFusionLSTM` to emit per-frame failure probability across three heterogeneous robotic manipulation datasets (Reassemble, DROID, Fractal RT-1), with the data-plumbing layer collapsed onto a shared platform.
 
