@@ -96,7 +96,7 @@ The classifier is a small but carefully shaped network: 108 547 trainable parame
 A late-fusion BiLSTM with attention pooling. Two streams encode kinematic and visual signal independently; their pooled outputs are concatenated and fed to a single linear head.
 
 ```mermaid
-flowchart LR
+flowchart TD
   kin["x_kin<br/>(B, 50, 15)"] --> BL1["BiLSTM 15&rarr;64<br/>1 layer, bidirectional"]
   BL1 --> A1["softmax attention<br/>pool over T=50"]
   A1 --> KP["kin_pooled<br/>(B, 128)"]
