@@ -8,6 +8,7 @@ authors:
 year: 2026
 url: "https://github.com/EdoardoBambini/grasp-predictor"
 repository-code: "https://github.com/EdoardoBambini/grasp-predictor"
+license: Apache-2.0
 type: software
 keywords:
   - robotics

@@ -1,6 +1,6 @@
 # Cross-Format Grasp Integrity Predictor on Mosaico
 
-[![CI](https://github.com/EdoardoBambini/grasp-predictor/actions/workflows/ci.yml/badge.svg)](https://github.com/EdoardoBambini/grasp-predictor/actions/workflows/ci.yml) [![Built on Mosaico ≥ 0.4](https://img.shields.io/badge/built%20on-Mosaico%20%E2%89%A5%200.4-1f77b4.svg)](https://github.com/mosaico-labs/mosaico) [![PyTorch ≥ 2.2](https://img.shields.io/badge/PyTorch-%E2%89%A5%202.2-ee4c2c?logo=pytorch&logoColor=white)](https://pytorch.org/) [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/EdoardoBambini/grasp-predictor/actions/workflows/ci.yml/badge.svg)](https://github.com/EdoardoBambini/grasp-predictor/actions/workflows/ci.yml) [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE) [![Built on Mosaico ≥ 0.4](https://img.shields.io/badge/built%20on-Mosaico%20%E2%89%A5%200.4-1f77b4.svg)](https://github.com/mosaico-labs/mosaico) [![PyTorch ≥ 2.2](https://img.shields.io/badge/PyTorch-%E2%89%A5%202.2-ee4c2c?logo=pytorch&logoColor=white)](https://pytorch.org/) [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 
 A cross-format grasp failure classifier trained on three heterogeneous manipulation datasets (Reassemble, DROID, Fractal RT-1). The pipeline uses [Mosaico](https://github.com/mosaico-labs/mosaico) as the data platform, so the application code never reads `.h5`, `.tfrecord` or ROS bag files directly.
 
@@ -300,6 +300,10 @@ The first path with a present column wins; the loader falls back to the second.
 - **50 Hz SyncHold resampling.** Mosaico's `SyncTransformer` with forward fill policy, safe across booleans / floats / arrays, keeps quaternions valid (interpolation would break unit norm).
 - **Sliding windows:** `seq_len = 50` (1 second at 50 Hz), `stride = 50` (no overlap), label = max over the window.
 - **Pre cache + LSTM only training.** The visual encoder is frozen, its forward pass is computed once and reused across N training runs. Without this, training the head N times on CPU is unfeasible.
+
+## License
+
+Apache 2.0, see [`LICENSE`](LICENSE). Copyright (c) 2026 Edoardo Bambini.
 
 ## Citations and Tools Used
 

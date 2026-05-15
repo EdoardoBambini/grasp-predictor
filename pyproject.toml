@@ -3,6 +3,7 @@ name = "grasp-integrity-predictor"
 version = "1.0.0"
 description = "Cross-format binary grasp failure classifier (LateFusionLSTM) over three manipulation datasets unified through the Mosaico data platform."
 authors = ["Edoardo Bambini"]
+license = "Apache-2.0"
 readme = "README.md"
 homepage = "https://github.com/EdoardoBambini/grasp-predictor"
 repository = "https://github.com/EdoardoBambini/grasp-predictor"
@@ -10,6 +11,7 @@ keywords = ["robotics", "grasp-failure", "physical-ai", "mosaico", "lstm", "case
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
