@@ -4,7 +4,6 @@ from __future__ import annotations
 import sys
 
 from mosaicolabs import MosaicoClient
-from mosaicolabs.models.platform import Sequence
 from mosaicolabs.models.query import QuerySequence
 
 
@@ -14,7 +13,7 @@ IMAGE_KEYWORDS = ("image", "camera", "frame", "rgb", "video")
 def probe_dataset(dsid: str, host: str, port: int, max_tries: int = 30) -> None:
     c = MosaicoClient.connect(host=host, port=port)
     try:
-        q = QuerySequence().with_expression(Sequence.Q.user_metadata["dataset_id"].eq(dsid))
+        q = QuerySequence().with_user_metadata("dataset_id", eq=dsid)
         resp = list(c.query(q))
         print(f"=== {dsid} ({len(resp)} seq in catalog) ===", flush=True)
         if not resp:

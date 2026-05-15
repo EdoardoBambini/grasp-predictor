@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "Grasp Integrity Predictor"
-abstract: "Cross-format binary grasp failure classifier (LateFusionLSTM) over three robotic manipulation datasets (Reassemble, DROID, Fractal RT-1), built on the Mosaico data platform as part of a robotics thesis case study."
+abstract: "Cross-format binary grasp failure classifier (LateFusionLSTM) over three robotic manipulation datasets (Reassemble, DROID, Fractal RT-1), built on the Mosaico data platform as part of a robotics thesis."
 authors:
   - family-names: Bambini
     given-names: Edoardo
@@ -16,4 +16,3 @@ keywords:
   - physical-ai
   - mosaico
   - lstm
-  - case-study

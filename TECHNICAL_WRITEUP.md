@@ -1,30 +1,16 @@
-# A Cross Format Grasp Integrity Predictor built on Mosaico
+# Trying Mosaico on a Cross-Format Grasp Failure Classifier
 
-How I trained a single `LateFusionLSTM` to emit per-frame failure probability across three heterogeneous robotic manipulation datasets (Reassemble, DROID, Fractal RT-1), with the data-plumbing layer collapsed onto a shared platform.
+I came across Mosaico, an open-source data platform for Physical AI, and wanted to see how much of a typical multi-dataset robotics data pipeline it would absorb. The setup I used as a stress test is a single `LateFusionLSTM` trained jointly on three heterogeneous manipulation datasets (Reassemble, DROID, Fractal RT-1), with the data-plumbing layer collapsed onto the platform.
 
-## Abstract
+## What I Tried
 
-A binary grasp-failure classifier trained jointly on Reassemble (HDF5), DROID (h5 / ROS-bag layout) and Fractal RT-1 (TFRecord with the RLDS schema), all consumed through the same code path with no per-format branching thanks to [Mosaico](https://github.com/mosaico-labs/mosaico) as the data layer. The trained classifier reaches an overall AUC of 0.685 on a stratified held-out test split with calibrated probability output spanning the full [0.027, 0.999] range. Beyond the classifier numbers themselves, the application layer comes in at about 80 lines of dataset-specific code, against a rough estimate of 2000 lines for an equivalent pipeline built directly on `.h5` / `.tfrecord` / ROS-bag parsers. Everything below the projection step is Mosaico's work; the rest of this post is what I built on top of it.
+The target was a binary grasp-failure classifier trained jointly on Reassemble (HDF5), DROID (h5 / ROS-bag layout) and Fractal RT-1 (TFRecord with the RLDS schema), all consumed through the same code path with no per-format branching, using [Mosaico](https://github.com/mosaico-labs/mosaico) as the data layer. The trained classifier reaches an overall AUC of 0.685 on a stratified held-out test split with calibrated probability output spanning the full [0.027, 0.999] range. The 0.685 figure is modest in absolute terms, and it reflects a structural ceiling set by the supervision granularity of two of the three datasets (DROID and Fractal RT-1 carry only episode-level outcome flags, not per-frame labels), not by the cross-format pipeline itself. Beyond the classifier numbers themselves, the application layer comes in at about 80 lines of dataset-specific code, against a rough estimate of 2000 lines for an equivalent pipeline built directly on `.h5` / `.tfrecord` / ROS-bag parsers.
 
-## What Mosaico Is
+## Why Mosaico
 
-In this project I used Mosaico to consume Reassemble (HDF5), DROID (h5 / ROS-bag) and Fractal RT-1 (TFRecord) through a single code path. Mosaico provides cross-format ingestion, multi-rate synchronization and ontology binding out of the box, so the application side did not need three format-specific parsers, three synchronization routines or three label adapters. Once the three datasets were ingested, training, evaluation and overlay rendering all ran on the same code regardless of where the data physically lived on disk.
+Combining three robotic datasets in three different storage formats normally means writing one parser per format, one synchronization routine per sample rate, one ontology mapping per topic naming convention, and a maintenance cost that grows superlinearly with the fourth dataset. The point of pulling [Mosaico](https://github.com/mosaico-labs/mosaico) into this project was strictly instrumental: have a single uniform DataFrame source consuming Reassemble (HDF5), DROID (h5 / ROS-bag) and Fractal RT-1 (TFRecord) through the same code path, with no per-format branching, so I could spend my time on the classifier instead of on three parsers.
 
-[Mosaico](https://github.com/mosaico-labs/mosaico) itself is an open-source data platform for Physical AI: a Rust daemon (`mosaicod`) and a Python SDK (`mosaicolabs`) that together replace the linear ROS-bag and the ad-hoc dataset directory with a structured, queryable archive. The data model rests on three primitives:
-
-- **Ontology**: a strictly-typed semantic model describing the shape of one signal. Core types ship in `mosaicolabs` (`Pose`, `Boolean`, `CompressedImage`, `Floating32`, `RobotJoint`, `ForceTorque`, `Velocity`); domain-specific ones (`EndEffector`, `SegmentInfo`, ...) live in plugin packs.
-- **Topic**: a concrete time series of one ontology model, with a strict one-to-one binding between topic and ontology type.
-- **Sequence**: a recording session, a logically related collection of topics sharing metadata.
-
-Storage is decoupled from indexing. `mosaicod` handles ingestion, indexing, queries and lifecycle; a metadata database carries the structured part; blobs live in pluggable object storage (MinIO, S3 or local filesystem); Apache Arrow is the wire format between server and client, so the catalog is delivered to the Python side without serialization copies.
-
-New sensors and file formats enter the platform through plugins. The manipulation pack [`mosaico-alchemy`](https://github.com/mosaico-labs/mosaico-alchemy) ships the ingestion plugins for the three datasets used here. From the application side, the SDK exposes the catalog as a single uniform DataFrame source: in this project I never read `.h5`, `.tfrecord` or ROS-bag files directly.
-
-## The Data Plumbing Problem
-
-Combining heterogeneous robotic datasets normally means writing one parser per format, one synchronization routine per sample rate, one ontology mapping per topic naming convention, and a maintenance burden that grows superlinearly with the fourth dataset. The cost is paid twice: in engineering time spent on bespoke data plumbing, and in slower experimentation on the actual model.
-
-Mosaico is built around the idea that this overhead is the central friction in Physical-AI training, and dissolves it through the Physical-AI Bridge: a single uniform interface (`MosaicoClient` + `DataFrameExtractor` + `SyncTransformer`) that hides format-specific decoding behind shared ontology types and serves the same DataFrame contract regardless of the storage format underneath. The pipeline below uses that interface to assemble a non-trivial supervised learning task with bounded application code, and reports what the platform delivered at every step.
+Three primitives show up throughout this post: an **Ontology** (a strictly-typed semantic model for one signal, e.g. `Pose`, `Boolean`, `CompressedImage`, `RobotJoint`; domain-specific ones like `SegmentInfo` live in plugin packs), a **Topic** (a time series of one ontology type), and a **Sequence** (a recording session bundling related topics with shared metadata). The manipulation pack [`mosaico-alchemy`](https://github.com/mosaico-labs/mosaico-alchemy) ships the ingestion plugins for the three datasets used here. For everything else (Rust daemon, storage layout, wire format) I defer to the project page.
 
 ## Datasets
 
@@ -46,13 +32,10 @@ Every sequence in every dataset goes through the same chain. The application cod
 ```python
 from mosaicolabs import MosaicoClient
 from mosaicolabs.ml import DataFrameExtractor, SyncHold, SyncTransformer
-from mosaicolabs.models.platform import Sequence
 from mosaicolabs.models.query import QuerySequence
 
 client = MosaicoClient.connect(host="127.0.0.1", port=6726)
-query = QuerySequence().with_expression(
-    Sequence.Q.user_metadata["dataset_id"].eq(dataset_id)
-)
+query = QuerySequence().with_user_metadata("dataset_id", eq=dataset_id)
 for item in client.query(query):
     handler = client.sequence_handler(item.sequence.name)
     extractor = DataFrameExtractor(handler)
@@ -68,20 +51,20 @@ for item in client.query(query):
 
 What this does, step by step:
 
-1. **Server-side query** (`MosaicoClient.connect` + `QuerySequence().with_expression(...)`). The expression compiles into a server-side `WHERE` on the metadata column; the indexed catalog returns only the sequences that match. No client-side scan, no filesystem traversal, no per-dataset branching on storage layout.
+1. **Server-side query** (`MosaicoClient.connect` + `QuerySequence().with_user_metadata(...)`). The SDK translates the filter into a server-side `WHERE` on the metadata column; the indexed catalog returns only the sequences that match. No client-side scan, no filesystem traversal, no per-dataset branching on storage layout.
 2. **Sequence handle** (`client.sequence_handler(name)`). The catalog returns a typed handle into the indexed sequence, abstracting away the underlying storage location and surfacing the topics with their bound ontology types.
-3. **DataFrame injection** (`DataFrameExtractor.to_pandas_chunks`). The SDK streams the requested topics directly into pandas DataFrames over Apache Arrow with bounded memory, regardless of how the source is laid out underneath. Three datasets, one DataFrame contract, zero serialization copies between server and client.
+3. **DataFrame injection** (`DataFrameExtractor.to_pandas_chunks`). The SDK streams the requested topics directly into pandas DataFrames over Apache Arrow with bounded memory, regardless of how the source is laid out underneath. The DataFrame layout is the same across the three datasets, so downstream code does not have to branch on storage format.
 4. **Synchronization** (`SyncTransformer(target_fps=50.0, policy=SyncHold())`). Heterogeneous sample rates land on a single 50 Hz grid. The `SyncHold` forward-fill policy preserves quaternion unit norm (interpolation would silently corrupt orientation data) and is safe across booleans, floats, and array-typed payloads.
-5. **Application projection** (`feature_mapper.project`). Mosaico delivers a uniform dot-notation schema (`<topic>.<ontology_tag>.<field>`) across the bound ontology types, and the application maps that schema onto the canonical 8-feature representation of the domain. This is where the application code lives; everything upstream is the platform.
+5. **Application projection** (`feature_mapper.project`). The SDK exposes a uniform dot-notation schema (`<topic>.<ontology_tag>.<field>`) across the bound ontology types, and the application maps that schema onto the canonical 8-feature representation of the domain. The projection layer is small but is the only piece that knows about the three datasets individually.
 6. **Derived features** (`add_derived_features`). Finite difference on the uniform timeline produced by `SyncTransformer`, yielding 7 velocity proxies that lift the kinematic vector to 15 dimensions.
-7. **Label adapters** (`label_adapters.label`). Failure annotations are read through the same SDK handle, never from side-car files. The Reassemble label topic is read from either `/grasp_failure_label.boolean.data` (`Boolean` ontology) or `/grasp_failure_label.segment_info.success` (`SegmentInfo` ontology). I contributed the `SegmentInfo` ontology and a corresponding Reassemble plugin update upstream as part of this work (`mosaico-labs/mosaico-alchemy#4`).
+7. **Label adapters** (`label_adapters.label`). Failure annotations are read through the same SDK handle, never from side-car files. The Reassemble label topic is read from either `/grasp_failure_label.boolean.data` (`Boolean` ontology) or `/grasp_failure_label.segment_info.success` (`SegmentInfo` ontology). I contributed the `SegmentInfo` ontology and a corresponding Reassemble plugin update upstream as part of this work (`mosaico-labs/mosaico-alchemy#4`). Writing the actual Reassemble label backfill was where I hit the main piece of SDK friction in this project. For what is conceptually a one-line operation (append these `(timestamp, value)` samples to this topic on this sequence), there is no one-shot helper, so a small backfill ended up composing `sequence_update`, explicit topic creation, opening a writer, wrapping each sample as the right `Message` type, and pushing them one at a time: five concepts in a row for one operation. A helper like `h.append_topic("/grasp_failure_label", samples=[(t, v), ...], ontology=Boolean)` would have collapsed those into a single call. If an equivalent helper already exists in the SDK I missed it, but I did not find it from the docs.
 8. **Same chain at evaluation time**. Inference at training time and inference at evaluation time use this exact chain, so the evaluation loop never diverges from the training pipeline.
 
-## How Little Application Code Is Needed on Top
+## How Much Application Code I Wrote
 
-Thanks to Mosaico handling parsing, decoding, synchronization and ontology binding upstream, the only application code I had to write lives in `data/feature_mapper.py`: 8 base features, 7 derivatives, three projection functions (`project_reassemble`, `project_droid`, `project_fractal_rt1`) totalling roughly 80 lines. Mosaico canonicalizes transport and schema; cross-dataset semantics (what does "gripper open" mean across three control conventions) stays the application's responsibility, as it should. The single semantic decision at the application layer is the per-dataset gripper binarization, with thresholds 0.025 (Reassemble, meters), 0.5 (DROID, normalized), 0.5 (Fractal, quasi-binary), calibrated from histograms in `results/audit_cache.json`. After binarization `gripper_state` is a binary signal across the three datasets and `gripper_vel` becomes a clean edge detector for opening and closing.
+With parsing, decoding, synchronization and ontology binding handled upstream by the SDK, the only application code I had to write lives in `data/feature_mapper.py`: 8 base features, 7 derivatives, three projection functions (`project_reassemble`, `project_droid`, `project_fractal_rt1`) totalling roughly 80 lines. Mosaico canonicalizes transport and schema; cross-dataset semantics (what does "gripper open" mean across three control conventions) stays the application's responsibility, as it should. The single semantic decision at the application layer is the per-dataset gripper binarization, with thresholds 0.025 (Reassemble, meters), 0.5 (DROID, normalized), 0.5 (Fractal, quasi-binary), calibrated from histograms in `results/audit_cache.json`. After binarization `gripper_state` is a binary signal across the three datasets and `gripper_vel` becomes a clean edge detector for opening and closing.
 
-For comparison, a from-scratch implementation would need a dedicated HDF5 parser for Reassemble (with `segments_info` traversal, two-finger gripper aggregation, per-topic JPEG decoding), an h5 ROS-bag-style parser for DROID (cartesian pose unwrapping, episode-level metadata, MP4 wrist-camera decoding at 30 fps), a TFRecord/RLDS parser for Fractal RT-1 (nested step structure traversal, terminal reward extraction, image byte unpacking), plus a custom multi-rate synchronization layer with quaternion-safe policies. A reasonable estimate is around 2000 lines of production parsing and synchronization code, before any modelling work begins. The pipeline here collapses that to about 80 application lines per dataset on top of `mosaicolabs`, a roughly 8× reduction in surface area, with the maintenance burden of upstream format changes absorbed by the SDK rather than the application.
+For comparison, a from-scratch implementation would need a dedicated HDF5 parser for Reassemble (with `segments_info` traversal, two-finger gripper aggregation, per-topic JPEG decoding), an h5 ROS-bag-style parser for DROID (cartesian pose unwrapping, episode-level metadata, MP4 wrist-camera decoding at 30 fps), a TFRecord/RLDS parser for Fractal RT-1 (nested step structure traversal, terminal reward extraction, image byte unpacking), plus a custom multi-rate synchronization layer with quaternion-safe policies. A reasonable estimate is around 2000 lines of bespoke parsing and synchronization code, before any modelling work begins. Here the application side stays at about 80 lines on top of `mosaicolabs`.
 
 ## Network Architecture
 
@@ -155,6 +138,8 @@ Test set, stratified per-dataset 70 / 15 / 15 split (seed 42), threshold tuned o
 |---|---|
 | Overall AUC (test) | **0.685** |
 | Overall F1 (test, threshold 0.806) | **0.334** |
+| Failure precision (test, threshold 0.806) | 0.28 |
+| Failure recall (test, threshold 0.806) | 0.42 |
 | Class separation (P_fail − P_succ) | 0.173 |
 | Reassemble AUC | 0.626 |
 | DROID AUC | 0.614 |
@@ -162,6 +147,8 @@ Test set, stratified per-dataset 70 / 15 / 15 split (seed 42), threshold tuned o
 | P(failure) range observed | [0.027, 0.999] |
 | Confident failure (P > 0.8) window fraction | 25.1 % |
 | Confident success (P < 0.2) window fraction | 13.8 % |
+
+Class separation of 0.173 means that, on average, a window drawn from a failing sequence receives a predicted failure probability about 17 percentage points higher than a window drawn from a successful one. This is a weak but consistent signal: the model is not confidently distinguishing the two classes in absolute terms, but it is systematically biased in the right direction across all three datasets. In a safety-monitoring context this matters more than the absolute threshold: a monotone risk signal that rises before the grasp collapses is useful even if it never crosses 0.9, provided the ordering is reliable. The low separation is the expected outcome of training predominantly on episode-level labels; the model cannot localize when within the sequence the failure originates, only that the sequence as a whole is more or less failure-prone.
 
 <p align="center">
   <img src="results/multimodal_indist_v9_sharp/roc_curve.png" width="500"/><br/>
@@ -184,6 +171,8 @@ A single set of weights, trained jointly on data canonicalized from HDF5, h5 ROS
 
 The structural ceiling on DROID and Fractal is set by their supervision granularity, not by the cross-format pipeline: any window inside an episode inherits the episode-level label, so the model cannot learn to localize the failure moment within the sequence. This is a property of the data, not of the model. Calibration is consistent across formats: the classifier emits probabilities across the full unit interval, so the threshold 0.806 selects a calibrated decision rather than chasing the small differences typical of an under-separated classifier.
 
+There is also an open caveat on Reassemble specifically: its 91.7 % failure rate introduces a dataset-identity confound. A model that learns to recognize Reassemble-specific kinematic or visual signatures (rather than the failure signal itself) would still score above chance on the Reassemble test split. The per-dataset AUC numbers alone cannot rule this out. A clean ablation would be to train without Reassemble and measure whether the DROID and Fractal RT-1 AUCs change materially; a stable result would suggest the joint representations are genuinely cross-format rather than anchored to the dominant-prior source.
+
 <p align="center">
   <img src="results/multimodal_indist_v9_sharp/per_dataset_confusion.png" width="900"/><br/>
   <em>Per-dataset confusion matrices at the F1-optimal threshold for each format (Reassemble 0.039 is aggressive because its prior is 91.7 % failure; DROID 0.449 and Fractal 0.664 sit in the more conventional range).</em>
@@ -195,15 +184,17 @@ Beyond the test-set metrics, the classifier runs at 50 Hz over the cached kinema
 
 ## Practical Takeaways
 
-Three observations from this project, mapped onto how Mosaico actually paid off:
+A few observations from this experiment.
 
-**Efficiency.** The application code on top of the SDK is three canonical projection functions and a per-dataset gripper threshold table, around 80 lines per dataset. The training script, the dataset wrapper, and the renderer are dataset-agnostic by construction. Adding a fourth dataset requires one new projection function and one threshold; everything else compiles unchanged. Mosaico absorbs the parsing, decoding, and synchronization burden upstream.
+The application code on top of the SDK ended up being three canonical projection functions and a per-dataset gripper threshold table, around 80 lines per dataset. The training script, the dataset wrapper, and the renderer are dataset-agnostic by construction; adding a fourth dataset would mean one new projection function and one threshold, nothing else.
 
-**Integrity.** `SyncTransformer` is what makes a cross-modality BiLSTM possible at all. Joint torque at 100 Hz, vision at 30 Hz, and sparse event topics land at the model on a single 50 Hz grid with consistent timestamps; `SyncHold` preserves quaternion unit norm where naive interpolation would not. None of this logic appears in application code.
+`SyncTransformer` was the key piece for me here. Joint torque at 100 Hz, vision at 30 Hz, and sparse event topics arrive at the model on a single 50 Hz grid with consistent timestamps; `SyncHold` keeps quaternion unit norm intact, which naive interpolation does not. None of this logic appears in application code, and writing it from scratch for three formats is the kind of work that easily eats more time than the model itself.
 
-**Reusable inference.** The same `predict_proba` call that produced the test-set metrics fires against held-out test windows during overlay rendering, in the same DataFrame layout that Mosaico produced at training time. Training-time and evaluation-time inference share one interface and one data contract.
+The same `predict_proba` call that produced the test-set metrics fires against held-out test windows during overlay rendering, in the same DataFrame layout produced at training time. Training-time and evaluation-time inference share one interface and one data contract, which kept the overlay rendering a couple-hours job rather than a separate sub-project.
 
-The honest limit of the result is bounded by supervision granularity, not by the bridge: Reassemble is the only dataset with per-frame failure labels, DROID and Fractal carry episode-level outcome flags only. With 48 Reassemble sequences contributing the only frame-level supervision, an overall AUC of 0.685 is consistent with that structural ceiling. A more accurate classifier would require additional per-frame annotations, which is orthogonal to what Mosaico does. The pipeline itself delivers what the Physical-AI Bridge promises: one interface, three storage formats, one classifier that generalizes across all of them.
+One piece of the workflow did not fit cleanly into the catalog: the trained artifacts themselves. The model is trained on Mosaico data and runs back on Mosaico data, but the `.pt` checkpoint and the `.npz` scaler still live on the filesystem and are loaded by path at inference time, because I did not find a first-class way to attach an ML artifact (a checkpoint, a fitted scaler, an evaluation summary) to a sequence or to a run inside the catalog. The training-to-inference loop is otherwise clean; this is the one piece of state that ended up outside.
+
+The honest limit of the result is bounded by supervision granularity, not by the data layer: Reassemble is the only dataset with per-frame failure labels, DROID and Fractal RT-1 carry episode-level outcome flags only. With 48 Reassemble sequences contributing the only frame-level supervision, an overall AUC of 0.685 is consistent with that structural ceiling. A more accurate classifier would require additional per-frame annotations, which is orthogonal to what the data platform does.
 
 ## Reproducibility
 
@@ -211,7 +202,7 @@ Reproducing the project from raw data takes roughly three hours of wall-clock to
 
 ## References and Acknowledgments
 
-- Source repository (this case study): [github.com/EdoardoBambini/grasp-predictor](https://github.com/EdoardoBambini/grasp-predictor).
+- Source repository: [github.com/EdoardoBambini/grasp-predictor](https://github.com/EdoardoBambini/grasp-predictor).
 - Mosaico, the data platform for Physical AI: [mosaico.dev](https://mosaico.dev), [github.com/mosaico-labs/mosaico](https://github.com/mosaico-labs/mosaico). Python SDK package `mosaicolabs`.
 - Manipulation pack and ingestion plugins: [github.com/mosaico-labs/mosaico-alchemy](https://github.com/mosaico-labs/mosaico-alchemy).
 - Reassemble dataset (HDF5 manipulation recordings).

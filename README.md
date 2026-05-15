@@ -6,7 +6,7 @@ A cross-format grasp failure classifier trained on three heterogeneous manipulat
 
 A single `LateFusionLSTM` consumes 15 canonical kinematic features and a 64-dim visual descriptor per timestep (MobileNetV3 Small layer 6, post-IPCA) over 50-frame sliding windows (1 s at 50 Hz), and emits a calibrated failure probability per window.
 
-Full technical writeup in [`BLOG_POST.md`](BLOG_POST.md).
+Full technical writeup in [`TECHNICAL_WRITEUP.md`](TECHNICAL_WRITEUP.md).
 
 ## Quickstart
 
@@ -62,7 +62,7 @@ Trainable parameters: 108547. Training time: about 6 minutes on Ryzen 7 CPU (no 
 - **Loss**: `BCEWithLogitsLoss` with `pos_weight=4.522` (auto from class balance), no label smoothing.
 - **Regularization**: `kin_noise_std=0.02`, `WeightedRandomSampler` on the training split, dropout 0.35, gradient clip 1.0, SWA from epoch 8, `ReduceLROnPlateau`.
 
-Detailed motivation for the design choices, training curves, and per-dataset ROC analysis are in [`BLOG_POST.md`](BLOG_POST.md).
+Detailed motivation for the design choices, training curves, and per-dataset ROC analysis are in [`TECHNICAL_WRITEUP.md`](TECHNICAL_WRITEUP.md).
 
 ## Repository Structure
 
@@ -103,7 +103,7 @@ grasp_integrity_predictor/
     compose-training.yml                    Postgres + MinIO + mosaicod stack
   run_training_cached.py                    Training entry point
   run_ingestion_parallel.py                 Parallel Reassemble ingest entry point
-  BLOG_POST.md                              Technical writeup
+  TECHNICAL_WRITEUP.md                              Technical writeup
   README.md                                 This file
   pyproject.toml
   requirements.txt
@@ -307,7 +307,7 @@ Apache 2.0, see [`LICENSE`](LICENSE). Copyright (c) 2026 Edoardo Bambini.
 
 ## Citations and Tools Used
 
-- Technical writeup: [`BLOG_POST.md`](BLOG_POST.md)
+- Technical writeup: [`TECHNICAL_WRITEUP.md`](TECHNICAL_WRITEUP.md)
 - **Mosaico**: open-source data platform for Physical AI ([mosaico.dev](https://mosaico.dev), [github.com/mosaico-labs/mosaico](https://github.com/mosaico-labs/mosaico)). Python SDK package `mosaicolabs`.
 - **mosaico-alchemy**: manipulation plugin pack with ingestion plugins for Reassemble, DROID, and Fractal RT-1 ([github.com/mosaico-labs/mosaico-alchemy](https://github.com/mosaico-labs/mosaico-alchemy)).
 - **Reassemble dataset**: HDF5 manipulation recordings.

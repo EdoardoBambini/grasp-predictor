@@ -1,16 +1,13 @@
 """Sanity check SDK-side: verify /grasp_failure_label topic is present
 on reassemble sequences after the backfill."""
 from mosaicolabs import MosaicoClient
-from mosaicolabs.models.platform import Sequence
 from mosaicolabs.models.query import QuerySequence
 
 
 def main():
     client = MosaicoClient.connect(host="127.0.0.1", port=6726)
 
-    q = QuerySequence().with_expression(
-        Sequence.Q.user_metadata["dataset_id"].eq("reassemble")
-    )
+    q = QuerySequence().with_user_metadata("dataset_id", eq="reassemble")
     resp = client.query(q)
     items = list(resp)
     names = sorted([it.sequence.name for it in items])

@@ -38,9 +38,8 @@ def worker(worker_id: int, sequence_paths: list[str], host: str, port: int,
 
     # Refresh the existing-sequences set so this worker skips what other
     # workers have already ingested.
-    from mosaicolabs.models.platform import Sequence
     from mosaicolabs.models.query import QuerySequence
-    q = QuerySequence().with_expression(Sequence.Q.user_metadata["dataset_id"].eq("droid"))
+    q = QuerySequence().with_user_metadata("dataset_id", eq="droid")
     existing = {it.sequence.name for it in client.query(q)}
     log.info("existing droid sequences in catalog: %d", len(existing))
 
@@ -111,7 +110,6 @@ def main() -> int:
     # work, then split the list across workers.
     from mosaicolabs.comm import MosaicoClient
     from mosaicolabs.packs.manipulation.runner.runner import ManipulationRunner
-    from mosaicolabs.models.platform import Sequence
     from mosaicolabs.models.query import QuerySequence
 
     client = MosaicoClient.connect(args.host, args.port)
@@ -127,7 +125,7 @@ def main() -> int:
 
     # Skip sequences already in the catalog. The runner re-checks internally,
     # so this filter is an optimization to avoid N round-trips.
-    q = QuerySequence().with_expression(Sequence.Q.user_metadata["dataset_id"].eq("droid"))
+    q = QuerySequence().with_user_metadata("dataset_id", eq="droid")
     existing = {it.sequence.name for it in client.query(q)}
     log.info("already in catalog: %d (will be skipped)", len(existing))
     client.close()

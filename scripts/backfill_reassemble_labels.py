@@ -10,7 +10,6 @@ from pathlib import Path
 import h5py
 
 from mosaicolabs import Boolean, Message, MosaicoClient
-from mosaicolabs.models.platform import Sequence
 from mosaicolabs.models.query import QuerySequence
 
 TOPIC = "/grasp_failure_label"
@@ -91,7 +90,7 @@ def main() -> int:
     client = MosaicoClient.connect(host=args.host, port=args.port)
     print(f"Connected to mosaicod @ {args.host}:{args.port}")
 
-    q = QuerySequence().with_expression(Sequence.Q.user_metadata["dataset_id"].eq("reassemble"))
+    q = QuerySequence().with_user_metadata("dataset_id", eq="reassemble")
     resp = client.query(q)
     seq_names = sorted([it.sequence.name for it in resp])
     print(f"Reassemble sequences: {len(seq_names)}")

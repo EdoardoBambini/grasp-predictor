@@ -9,7 +9,6 @@ import pandas as pd
 
 from mosaicolabs import MosaicoClient
 from mosaicolabs.ml import DataFrameExtractor, SyncHold, SyncTransformer
-from mosaicolabs.models.platform import Sequence
 from mosaicolabs.models.query import QuerySequence
 
 from . import feature_mapper, label_adapters
@@ -65,9 +64,9 @@ class CrossDatasetIngestor:
 
     def _query_names(self, dsid: str) -> List[str]:
         assert self._client is not None
-        # Filter runs on the DB: the expression gets translated into a
+        # Filter runs on the DB: the SDK translates this into a
         # WHERE user_metadata->>'dataset_id' = dsid. No client-side scan.
-        q = QuerySequence().with_expression(Sequence.Q.user_metadata["dataset_id"].eq(dsid))
+        q = QuerySequence().with_user_metadata("dataset_id", eq=dsid)
         resp = self._client.query(q)
         return sorted([it.sequence.name for it in resp])
 

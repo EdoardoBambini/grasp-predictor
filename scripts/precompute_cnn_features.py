@@ -30,7 +30,7 @@ def build_cnn_backbone(intermediate_layer: int = -1,
                        spatial_pool: int = 1) -> tuple[nn.Module, int, tuple[int, int]]:
     """Build a frozen MobileNetV3 Small encoder (ImageNet pretrained, 112x112 input).
     Returns (model, output_dim, input_hw). intermediate_layer=6 + spatial_pool=3
-    yields the 360-dim spatial descriptor used in the case study;
+    yields the 360-dim spatial descriptor used in this project;
     intermediate_layer=-1 falls back to the full features + GAP (576-dim).
     """
     from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
