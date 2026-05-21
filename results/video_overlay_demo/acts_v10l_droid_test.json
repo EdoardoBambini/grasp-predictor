@@ -1,0 +1,36 @@
+[
+  {
+    "sequence": "C:/Users/monti/Desktop/mosaico project copia/mosaico project copia/project bambini/grasp_integrity_predictor/results/cnn_cache_spatial/droid/droid_file-003_ep4385.npz",
+    "offset": 0,
+    "duration": 6.7,
+    "label": "FAILURE",
+    "camera": "exterior_1_left",
+    "trace_stride": 25
+  },
+  {
+    "sequence": "C:/Users/monti/Desktop/mosaico project copia/mosaico project copia/project bambini/grasp_integrity_predictor/results/cnn_cache_spatial/droid/droid_file-004_ep4970.npz",
+    "offset": 0,
+    "duration": 13.2,
+    "label": "SUCCESS",
+    "camera": "exterior_1_left",
+    "trace_stride": 20,
+    "readout": "tail"
+  },
+  {
+    "sequence": "C:/Users/monti/Desktop/mosaico project copia/mosaico project copia/project bambini/grasp_integrity_predictor/results/cnn_cache_spatial/droid/droid_file-002_ep3064.npz",
+    "offset": 0,
+    "duration": 11.6,
+    "label": "FAILURE",
+    "camera": "exterior_1_left",
+    "trace_stride": 15
+  },
+  {
+    "sequence": "C:/Users/monti/Desktop/mosaico project copia/mosaico project copia/project bambini/grasp_integrity_predictor/results/cnn_cache_spatial/droid/droid_file-005_ep5751.npz",
+    "offset": 0,
+    "duration": 11.9,
+    "label": "SUCCESS",
+    "camera": "exterior_1_left",
+    "trace_stride": 20,
+    "readout": "tail"
+  }
+]

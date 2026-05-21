@@ -16,8 +16,7 @@ env/
 .env
 
 # Heavy Mosaico-derived caches; regeneratable from the catalog via
-# scripts/precompute_cnn_features.py + scripts/refresh_kin_in_cache.py.
-# best_model.pt IS tracked; the video deliverable is regenerated from scratch.
+# scripts/precompute_cnn_features.py. Not shipped in the repo.
 results/cnn_cache_*/
 
 # All MP4s in the overlay-demo dir (the deliverable is meant to be regenerated, not committed)

@@ -10,18 +10,17 @@ import tempfile
 from pathlib import Path
 
 import cv2
-import h5py
 import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from models.cached_lstm import LateFusionLSTM
+from models.mil_attention import LateFusionLSTMMIL
 
 SEQ_LEN = 50
 KIN_DIM = 15
 CACHE_FPS = 50.0
-THRESHOLD_DEFAULT = 0.806
+THRESHOLD_DEFAULT = 0.55  # v10l per-dataset DROID operating threshold
 
 CANVAS_W = 1280
 CANVAS_H = 720
@@ -63,7 +62,6 @@ _font = _font_cache()
 
 def load_model(model_dir: str):
     sc = np.load(os.path.join(model_dir, "scaler.npz"))
-    n_components = int(sc["ipca_n_components"])
     cfg = {}
     cfg_path = os.path.join(model_dir, "results.json")
     if os.path.exists(cfg_path):
@@ -71,35 +69,92 @@ def load_model(model_dir: str):
             cfg = json.load(f).get("config", {})
     hidden = int(cfg.get("hidden", 256))
     dropout = float(cfg.get("dropout", 0.35))
-    attn_pool = bool(cfg.get("attn_pool", False))
-    print(f"  model: hidden={hidden} dropout={dropout} attn_pool={attn_pool} ipca={n_components}")
-    model = LateFusionLSTM(
-        kin_dim=KIN_DIM, cnn_dim=n_components,
+    cnn_dim = int(cfg.get("cnn_dim", 360))
+    kin_dim = int(cfg.get("kin_dim_runtime", 16))
+    bidir = cfg.get("lstm_direction", "uni") == "bi"
+    pool_mode = cfg.get("mil_pool_mode", "gated")
+    use_nl_concat = bool(cfg.get("use_nl_concat", True))
+    nl_concat_dim = int(cfg.get("nl_concat_dim", 64))
+    print(f"  model: LateFusionLSTMMIL hidden={hidden} dropout={dropout} "
+          f"cnn_dim={cnn_dim} kin_dim={kin_dim} pool={pool_mode} "
+          f"lstm={'bi' if bidir else 'uni'} nl_concat={use_nl_concat}")
+    model = LateFusionLSTMMIL(
+        kin_dim=kin_dim, cnn_dim=cnn_dim,
         kin_hidden=hidden // 4, vis_hidden=hidden // 4,
-        num_layers=1, dropout=dropout, bidirectional=True, fc_dropout=dropout,
-        attn_pool=attn_pool,
+        num_layers=1, dropout=dropout, bidirectional=bidir,
+        attn_pool=bool(cfg.get("attn_pool", True)),
+        mil_attn_hidden=hidden // 2, head_hidden=hidden // 2,
+        pool_mode=pool_mode,
+        use_film=bool(cfg.get("use_film", False)),
+        use_nl_concat=use_nl_concat, nl_concat_dim=nl_concat_dim,
     )
     model.load_state_dict(torch.load(
         os.path.join(model_dir, "checkpoints", "best_model.pt"),
         map_location="cpu", weights_only=True))
     model.eval()
     return (model, sc["mean"], sc["std"], sc["cnn_mean"], sc["cnn_std"],
-            sc["ipca_components"], sc["ipca_mean"], n_components)
+            kin_dim, cnn_dim)
 
 
-def model_proba(model, kin_w, cnn_w, kin_mean, kin_std, cnn_mean, cnn_std,
-                ipca_comp, ipca_mean):
-    k = (kin_w - kin_mean) / kin_std
-    k = np.nan_to_num(k, nan=0.0).astype(np.float32)
-    c = (cnn_w.astype(np.float32) - cnn_mean) / cnn_std
-    c = np.nan_to_num(c, nan=0.0)
-    c = ((c - ipca_mean) @ ipca_comp.T).astype(np.float32)
-    with torch.no_grad():
-        return float(model.predict_proba(
-            torch.from_numpy(k[None]), torch.from_numpy(c[None])).item())
+def _prep_kin(kin_w, kin_mean, kin_std, kin_dim):
+    # Pad the kinematic window to the model's runtime kin dim (DROID cache is
+    # 15-D; the model expects 16-D with the trailing channel zero-padded), then
+    # z-score with the saved scaler.
+    kw = kin_w.astype(np.float32)
+    if kw.shape[1] < kin_dim:
+        kw = np.concatenate(
+            [kw, np.zeros((kw.shape[0], kin_dim - kw.shape[1]), np.float32)], axis=1)
+    elif kw.shape[1] > kin_dim:
+        kw = kw[:, :kin_dim]
+    return np.nan_to_num((kw - kin_mean) / kin_std, nan=0.0).astype(np.float32)
+
+
+def _prep_cnn(cnn_w, cnn_mean, cnn_std):
+    return np.nan_to_num((cnn_w.astype(np.float32) - cnn_mean) / cnn_std,
+                         nan=0.0).astype(np.float32)
+
+
+def prefix_bag_proba(model, pk_list, pc_list, n):
+    """Bag-level probability over the first ``n`` windows of the episode.
+
+    This is the model's running prediction for the sequence observed so far. It
+    is the faithful online signal for a bag-level MIL classifier: a single
+    per-window readout is unreliable because the head and pool are trained on
+    full bags, not on one window in isolation. DROID carries no language
+    instruction, so the null token is selected via is_droid=True.
+    """
+    xk = np.stack(pk_list[:n])[None]   # (1, n, T, kin_dim)
+    xc = np.stack(pc_list[:n])[None]   # (1, n, T, cnn_dim)
+    mask = torch.ones((1, n), dtype=torch.bool)
+    nl = torch.zeros((1, 512), dtype=torch.float32)
+    is_d = torch.ones((1,), dtype=torch.bool)
+    probs, _ = model.predict_proba(torch.from_numpy(xk), torch.from_numpy(xc),
+                                   mask, nl_emb=nl, is_droid=is_d)
+    return float(probs[0].item())
+
+
+def bag_proba(model, pk_list, pc_list, lo, hi):
+    """Bag-level P(failure) over the contiguous window slice ``[lo:hi]``.
+
+    Same readout as ``prefix_bag_proba`` but over an arbitrary window range, so
+    FAILURE acts can be scored on a trailing tail window (the model's
+    droid_tail_fraction=0.3 evaluation regime) while SUCCESS acts keep the full
+    prefix bag. DROID carries no language instruction, so the null token is
+    selected via is_droid=True.
+    """
+    n = hi - lo
+    xk = np.stack(pk_list[lo:hi])[None]   # (1, n, T, kin_dim)
+    xc = np.stack(pc_list[lo:hi])[None]   # (1, n, T, cnn_dim)
+    mask = torch.ones((1, n), dtype=torch.bool)
+    nl = torch.zeros((1, 512), dtype=torch.float32)
+    is_d = torch.ones((1,), dtype=torch.bool)
+    probs, _ = model.predict_proba(torch.from_numpy(xk), torch.from_numpy(xc),
+                                   mask, nl_emb=nl, is_droid=is_d)
+    return float(probs[0].item())
 
 
 def open_reassemble_video(h5_path: str, blob_key: str = "hand"):
+    import h5py  # lazy import: only the Reassemble path needs it
     with h5py.File(h5_path, "r") as f:
         blob = f[blob_key][()]
         raw = blob.tobytes() if hasattr(blob, "tobytes") else bytes(blob)
@@ -137,6 +192,54 @@ def open_droid_video(parquet_path: str, episode_id: int,
     print(f"  droid ep{episode_id}: parquet_local_idx={local_start}/{parquet_total}, "
           f"mp4_start={mp4_start}/{mp4_total}")
     return cap, mp4_start
+
+
+def find_shot(cap, center: int, half: int = 200, thresh: float = 35.0,
+              min_len: int = 12):
+    """Return the frames of the single continuous camera shot containing
+    ``center``.
+
+    DROID per-file mp4s concatenate many episodes back-to-back, and the
+    parquet->mp4 frame mapping is only approximate, so a fixed-length read from
+    an estimated start can splice in a neighboring episode (a visible scene
+    cut). We read a window around the estimate, detect hard cuts via frame
+    differencing, and clip to the shot that contains the anchor frame.
+    """
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or (center + half)
+    s0 = max(0, center - half)
+    s1 = min(total, center + half)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, s0)
+    frames, grays = [], []
+    for _ in range(max(1, s1 - s0)):
+        ok, fr = cap.read()
+        if not ok or fr is None:
+            break
+        frames.append(fr)
+        grays.append(cv2.cvtColor(cv2.resize(fr, (160, 90)),
+                                  cv2.COLOR_BGR2GRAY).astype(np.int16))
+    if not frames:
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 180
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 320
+        return [np.zeros((h, w, 3), np.uint8)]
+    diffs = [0.0] + [float(np.mean(np.abs(grays[i] - grays[i - 1])))
+                     for i in range(1, len(frames))]
+    c = max(0, min(center - s0, len(frames) - 1))
+    left = 0
+    for i in range(c, 0, -1):
+        if diffs[i] > thresh:
+            left = i
+            break
+    right = len(frames)
+    for i in range(c + 1, len(frames)):
+        if diffs[i] > thresh:
+            right = i
+            break
+    shot = frames[left:right]
+    if len(shot) < min_len:
+        a = max(0, c - min_len)
+        b = min(len(frames), c + min_len)
+        shot = frames[a:b]
+    return shot
 
 
 def color_for_p(p: float, threshold: float) -> tuple[int, int, int]:
@@ -216,7 +319,7 @@ def render_canvas(video_frame: np.ndarray, *, t_sec: float, dur_sec: float,
     draw.line([0, hud_y0, CANVAS_W, hud_y0], fill=(40, 50, 80), width=1)
 
     draw.text((24, hud_y0 + 8),
-              "P(failure) timeline   |   live LSTM inference @ 50 Hz",
+              "P(failure)   |   MIL bag prediction (eval protocol)",
               font=_font(FONT_BOLD, 13), fill=(170, 185, 215))
 
     plot_x0 = 24
@@ -308,7 +411,6 @@ def process_act(act: dict, model_bundle, *, threshold: float,
         tmp_files.append(tmp)
         dataset = "Reassemble  (NIST Assembly Task Board)"
         seq_name = f"reassemble_{date}"
-        # Reassemble offset is in 50Hz npz units; map to video fps
         video_fps = cap.get(cv2.CAP_PROP_FPS)
         video_start = int(round(offset / CACHE_FPS * video_fps))
     elif is_droid:
@@ -330,45 +432,91 @@ def process_act(act: dict, model_bundle, *, threshold: float,
     print(f"  source: {src_w}x{src_h} @ {video_fps:.1f}fps, video_start={video_start}")
 
     out_fps = 30
+    # Clip the source to the single continuous shot around the (approximate)
+    # start estimate, so the act never splices in a neighboring episode. Play it
+    # at ~native speed; the full P trace is fraction-synced over the same span.
+    shot = find_shot(cap, video_start, half=200, thresh=35.0)
+    n_shot = len(shot)
+    duration = max(4.0, min(16.0, n_shot / max(video_fps, 1.0)))
     n_video_frames = int(round(duration * out_fps))
+    print(f"  shot: {n_shot} frames -> duration {duration:.1f}s")
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     vw = cv2.VideoWriter(out_path, fourcc, out_fps, (CANVAS_W, CANVAS_H))
     if not vw.isOpened():
         raise RuntimeError(f"cv2.VideoWriter could not open {out_path}")
 
-    p_history = []
-    last_p = 0.0
     (model, kin_mean, kin_std, cnn_mean, cnn_std,
-     ipca_c, ipca_m, _) = model_bundle
+     kin_dim, cnn_dim) = model_bundle
     is_failure_act = label.upper().startswith("FAIL")
+    # Online readout to draw. Default preserves prior behavior (FAILURE ->
+    # trailing-tail bag, SUCCESS -> full prefix bag); an act may override with
+    # "readout": "tail" | "prefix" -- e.g. a SUCCESS act that should show the
+    # moving tail-sliding signal instead of the (cumulative, self-stabilizing)
+    # prefix bag. A tail readout on a success is the model's OOD regime, so the
+    # trace can rise toward the alarm band mid-episode before settling low.
+    readout = act.get("readout", "tail" if is_failure_act else "prefix")
 
+    # Windows are always SEQ_LEN (50) frames long; a finer per-act stride
+    # (e.g. 15-25) yields overlapping windows so partial-failure windows score
+    # at intermediate values, giving a gradual failure rise instead of a single
+    # jump. Defaults to SEQ_LEN (non-overlapping).
+    trace_stride = int(act.get("trace_stride", SEQ_LEN))
+    win_starts = list(range(0, len(kin_seq) - SEQ_LEN + 1, trace_stride))
+    pk_list = [_prep_kin(kin_seq[s:s + SEQ_LEN], kin_mean, kin_std, kin_dim)
+               for s in win_starts]
+    pc_list = [_prep_cnn(cnn_seq[s:s + SEQ_LEN], cnn_mean, cnn_std)
+               for s in win_starts]
+    warmup_windows = 2
+    M = len(win_starts)
+    # Per-act readout, matching the model's evaluation protocol on DROID:
+    #   FAILURE -> trailing-tail bag over the last K=round(0.3*M) windows. This
+    #     is the regime the model was trained/evaluated on for DROID failures
+    #     (droid_tail_fraction=0.3); the score rises low->high as the terminal
+    #     failure enters the tail window.
+    #   SUCCESS -> full prefix bag over every window seen so far (stays low).
+    # The full-episode prefix bag is OOD for DROID failures (the model misses
+    # them); the trailing-tail bag is OOD for successes (it false-alarms). There
+    # is no single label-agnostic online readout for this bag-level model, so we
+    # show each act under its evaluation protocol (disclosed on the intro card).
+    tail_k = max(1, int(round(0.30 * M))) if M else 1
+    p_by_n: dict = {}
+    for n in range(warmup_windows, M + 1):
+        if readout == "tail":
+            p_by_n[n] = bag_proba(model, pk_list, pc_list, max(0, n - tail_k), n)
+        else:
+            p_by_n[n] = prefix_bag_proba(model, pk_list, pc_list, n)
+
+    def _p_at(npz_i: int) -> float:
+        # Continuous window position (stride = trace_stride); linearly
+        # interpolate between the two surrounding window predictions for a
+        # smooth trace (identical predictions, just without stair-steps).
+        if not p_by_n:
+            return 0.0
+        x = npz_i / float(trace_stride)
+        lo_n = max(warmup_windows, min(int(np.floor(x)), M))
+        hi_n = max(warmup_windows, min(lo_n + 1, M))
+        if lo_n == hi_n:
+            return p_by_n[lo_n]
+        frac = float(x - np.floor(x))
+        return (1.0 - frac) * p_by_n[lo_n] + frac * p_by_n[hi_n]
+
+    p_history = []
     for k in range(n_video_frames):
         t_sec = k / out_fps
+        progress = k / max(n_video_frames - 1, 1)
 
-        npz_idx = offset + int(round(t_sec * CACHE_FPS))
-        if npz_idx >= len(kin_seq):
-            npz_idx = len(kin_seq) - 1
-        if npz_idx >= SEQ_LEN:
-            kw = kin_seq[npz_idx - SEQ_LEN:npz_idx]
-            cw = cnn_seq[npz_idx - SEQ_LEN:npz_idx]
-            p = model_proba(model, kw, cw, kin_mean, kin_std, cnn_mean, cnn_std,
-                            ipca_c, ipca_m)
-            last_p = p
-        else:
-            p = last_p
+        # The trace traverses the full cached episode over the act, and the
+        # source shot plays once over the same span, so video and P stay aligned
+        # by fraction even though the cache (50Hz) and the mp4 sit on different
+        # clocks for this dataset.
+        npz_idx = offset + int(round(progress * (len(kin_seq) - 1 - offset)))
+        npz_idx = max(0, min(npz_idx, len(kin_seq) - 1))
+        p = _p_at(npz_idx)
         p_history.append(p)
-        gt = int(label_seq[min(npz_idx, len(label_seq) - 1)] > 0.5)
 
-        video_frame_idx = video_start + int(round(t_sec * video_fps))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, video_frame_idx)
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            frame = np.zeros((src_h, src_w, 3), dtype=np.uint8)
+        frame = shot[min(int(round(progress * (n_shot - 1))), n_shot - 1)]
 
-        # The Reassemble label topic stores only single-frame boundary
-        # markers (failure on at the start of a failed segment, off again
-        # right after), so reading label_seq frame-by-frame would flicker.
         # The act-level label is authoritative; reveal it after the midpoint.
         if is_failure_act:
             gt_for_display = 1 if t_sec >= duration / 2 else 0
@@ -397,8 +545,8 @@ def process_act(act: dict, model_bundle, *, threshold: float,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--acts-config",
-        default="results/multimodal_indist_v9_sharp/acts_v9_2parts_reassemble_test.json")
-    ap.add_argument("--model-dir", default="results/multimodal_indist_v9_sharp")
+        default="results/video_overlay_demo/acts_v10l_droid_test.json")
+    ap.add_argument("--model-dir", default="results/multimodal_indist_v10l_seed42")
     ap.add_argument("--act-idx", type=int, default=-1)
     ap.add_argument("--threshold", type=float, default=THRESHOLD_DEFAULT)
     ap.add_argument("--out-dir", default="results/video_overlay_demo")

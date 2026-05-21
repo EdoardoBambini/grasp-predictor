@@ -115,8 +115,24 @@ def process_one(
     imgs_norm = normalize_imgs(frames)
     cnn_feats = cnn_forward_batch(cnn, imgs_norm, cnn_dim, batch_size)
 
-    kin = df[list(feature_mapper.EXTENDED_FEATURES)].to_numpy(dtype=np.float32)
+    # v10l: Fractal carries a 16th kinematic channel (raw gripper residual)
+    # appended after the 15 canonical+derived features; DROID/Reassemble stay
+    # 15-D and are zero-padded to 16 at training load time.
+    kin_cols = list(feature_mapper.EXTENDED_FEATURES)
+    if (dsid == "fractal_rt1"
+            and feature_mapper.GRIPPER_RESIDUAL_FEATURE in df.columns):
+        kin_cols = kin_cols + [feature_mapper.GRIPPER_RESIDUAL_FEATURE]
+    kin = df[kin_cols].to_numpy(dtype=np.float32)
     label = df[label_adapters.LABEL_COL].to_numpy(dtype=np.float32)
+
+    # v10l: per-episode 512-D NL embedding for Fractal, saved as an extra key.
+    save_kwargs = {}
+    if (dsid == "fractal_rt1"
+            and feature_mapper.NL_EMB_COLUMN in df.columns and n > 0):
+        nl = np.asarray(df[feature_mapper.NL_EMB_COLUMN].iloc[0],
+                        dtype=np.float32).flatten()
+        if nl.size == feature_mapper.NL_EMB_DIM:
+            save_kwargs["nl_emb"] = nl
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     np.savez_compressed(
@@ -124,8 +140,14 @@ def process_one(
         kin=kin,
         cnn=cnn_feats.astype(np.float16),
         label=label,
+        **save_kwargs,
     )
-    return {"n": n, "pos_ratio": float(label.mean()) if n else 0.0}
+    return {
+        "n": n,
+        "pos_ratio": float(label.mean()) if n else 0.0,
+        "kin_dim": kin.shape[1],
+        "has_nl": "nl_emb" in save_kwargs,
+    }
 
 
 def parse_args() -> argparse.Namespace:

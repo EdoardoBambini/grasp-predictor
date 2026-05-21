@@ -42,10 +42,25 @@ TOPICS_PER_DATASET: Dict[str, List[str]] = {
     "fractal_rt1": [
         "/step/observation/base_pose_tool_reached",
         "/step/observation/gripper_closed",
+        "/step/observation/gripper_closedness_commanded",
+        "/step/observation/natural_language_embedding",
         "/step/reward",
         "/step/is_terminal",
     ],
 }
+
+# v10l Fractal extras. The 16th kinematic channel is the raw gripper residual
+# (commanded minus sensed), populated only for Fractal RT-1; DROID has no
+# commanded signal and stays 15-D, zero-padded to 16 at training load time.
+# The natural-language embedding is the 512-D Universal Sentence Encoder vector
+# of the episode instruction, constant across the episode, carried per-episode
+# into the cache for the pre-pool language concat.
+FRACTAL_GRIPPER_COMMANDED_COL = "/step/observation/gripper_closedness_commanded.floating32.data"
+FRACTAL_GRIPPER_SENSED_COL = "/step/observation/gripper_closed.floating32.data"
+FRACTAL_NL_EMB_COL = "/step/observation/natural_language_embedding.text_embedding.values"
+GRIPPER_RESIDUAL_FEATURE = "gripper_residual"  # 16th kin channel (projected df)
+NL_EMB_COLUMN = "nl_emb"                        # per-episode 512-D, carried object col
+NL_EMB_DIM = 512
 
 # Optional RGB image topic per dataset (multimodal path). None means the
 # dataset has no RGB available and goes through kinematic-only. The exact
@@ -75,7 +90,7 @@ IMAGENET_STD:  Tuple[float, float, float] = (0.229, 0.224, 0.225)
 # normalized [0,1], bimodal at 0 and 1; Fractal: already quasi binary 0/1).
 # Without this binarization gripper_state and gripper_vel encode dataset
 # identity, leaking through the cross-dataset bridge.
-# Thresholds calibrated from histogram analysis of results/audit_cache.json.
+# Thresholds calibrated from a histogram analysis of the cached gripper values.
 #
 # Convention: 1.0 = "open" (high raw value), 0.0 = "closed" (low raw value).
 # The bimodal nature of the raw signals makes the binary projection a
@@ -268,6 +283,41 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     out["ee_rot_vel_z"] = _fd(out["ee_rot_qz"])
     out["gripper_vel"] = _fd(out["gripper_state"])
     return out
+
+
+# ----------------------------------------------------------------------------
+# Fractal RT-1 v10l extras: 16th gripper-residual channel + NL embedding
+# ----------------------------------------------------------------------------
+
+def fractal_gripper_residual(dense: pd.DataFrame) -> Optional[np.ndarray]:
+    """Raw gripper residual = commanded - sensed, per frame, from the synced
+    dense DataFrame. Returns a (T,) float32 array aligned to dense rows, or
+    None if either source column is absent. NaNs become 0.0."""
+    if (FRACTAL_GRIPPER_COMMANDED_COL not in dense.columns
+            or FRACTAL_GRIPPER_SENSED_COL not in dense.columns):
+        return None
+    cmd = pd.to_numeric(dense[FRACTAL_GRIPPER_COMMANDED_COL], errors="coerce").to_numpy(dtype=np.float32)
+    sns = pd.to_numeric(dense[FRACTAL_GRIPPER_SENSED_COL], errors="coerce").to_numpy(dtype=np.float32)
+    res = cmd - sns
+    return np.nan_to_num(res, nan=0.0).astype(np.float32)
+
+
+def extract_nl_emb(dense: pd.DataFrame, dim: int = NL_EMB_DIM) -> Optional[np.ndarray]:
+    """The episode's Universal Sentence Encoder embedding (constant across the
+    episode). Returns the first valid (dim,) float32 vector found in the
+    TextEmbedding column, or None if absent/malformed."""
+    if FRACTAL_NL_EMB_COL not in dense.columns:
+        return None
+    for v in dense[FRACTAL_NL_EMB_COL].values:
+        if v is None:
+            continue
+        try:
+            arr = np.asarray(v, dtype=np.float32).flatten()
+        except Exception:
+            continue
+        if arr.size == dim:
+            return arr
+    return None
 
 
 # ----------------------------------------------------------------------------

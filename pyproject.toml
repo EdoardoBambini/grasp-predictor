@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "grasp-integrity-predictor"
 version = "1.0.0"
-description = "Cross-format binary grasp failure classifier (LateFusionLSTM) over three manipulation datasets unified through the Mosaico data platform."
+description = "Cross-format binary grasp failure classifier (LateFusionLSTMMIL) over two manipulation datasets (DROID and Fractal RT-1) unified through the Mosaico data platform."
 authors = ["Edoardo Bambini"]
 license = "Apache-2.0"
 readme = "README.md"

@@ -1,0 +1,167 @@
+{
+  "config": {
+    "mode": "in-distribution",
+    "train_datasets": [
+      "droid",
+      "fractal_rt1"
+    ],
+    "test_datasets": [
+      "droid",
+      "fractal_rt1"
+    ],
+    "cache_dir": "results/cnn_cache_spatial",
+    "fractal_cache_dir": "results/cnn_cache_v10k_fractal",
+    "epochs": 30,
+    "batch_size": 16,
+    "lr": 0.001,
+    "weight_decay": 0.001,
+    "patience": 6,
+    "dropout": 0.35,
+    "hidden": 256,
+    "loss": "bce",
+    "pos_weight": 1.0,
+    "no_pos_weight": true,
+    "use_scheduler": true,
+    "weighted_sampler": true,
+    "kin_noise_std": 0.02,
+    "swa_start_epoch": 8,
+    "ipca_components": 0,
+    "attn_pool": true,
+    "mil_attention": true,
+    "mil_pool_mode": "gated",
+    "lstm_direction": "uni",
+    "droid_tail_fraction": 0.3,
+    "fractal_tail_fraction": 1.0,
+    "use_nl_concat": true,
+    "nl_concat_dim": 64,
+    "use_pcgrad": true,
+    "balanced_train": true,
+    "success_ratio": 0.65,
+    "kin_dim_runtime": 16,
+    "cnn_dim": 360,
+    "seed": 123,
+    "seq_len": 50,
+    "stride": 50
+  },
+  "sequence_counts": {
+    "train": 3905,
+    "val": 837,
+    "test": 837
+  },
+  "window_counts": {
+    "train": 60268,
+    "val": 13270,
+    "test": 12941
+  },
+  "train_time_sec": 727.8653650283813,
+  "test_metrics_tuned": {
+    "accuracy": 0.6303827751196173,
+    "auc": 0.792025158304228,
+    "f1": 0.5818673883626523,
+    "threshold": 0.2841409146785736,
+    "confusion_matrix": [
+      [
+        312,
+        290
+      ],
+      [
+        19,
+        215
+      ]
+    ],
+    "classification_report": "              precision    recall  f1-score   support\n\n     success       0.94      0.52      0.67       602\n     failure       0.43      0.92      0.58       234\n\n    accuracy                           0.63       836\n   macro avg       0.68      0.72      0.63       836\nweighted avg       0.80      0.63      0.64       836\n"
+  },
+  "test_metrics_at_0.5": {
+    "accuracy": 0.7284688995215312,
+    "auc": 0.792025158304228,
+    "f1": 0.5414141414141415,
+    "confusion_matrix": [
+      [
+        475,
+        127
+      ],
+      [
+        100,
+        134
+      ]
+    ],
+    "classification_report": "              precision    recall  f1-score   support\n\n     success       0.83      0.79      0.81       602\n     failure       0.51      0.57      0.54       234\n\n    accuracy                           0.73       836\n   macro avg       0.67      0.68      0.67       836\nweighted avg       0.74      0.73      0.73       836\n"
+  },
+  "per_dataset_test_metrics": {
+    "droid": {
+      "accuracy": 0.9530026109660574,
+      "auc": 0.9713300585679199,
+      "f1": 0.8656716417910447,
+      "threshold": 0.8806155323982239,
+      "confusion_matrix": [
+        [
+          307,
+          9
+        ],
+        [
+          9,
+          58
+        ]
+      ],
+      "f1_global_thr": 0.779874213836478,
+      "class_separation": 0.7491737985131875,
+      "mean_prob_failure_on_pos": 0.9060966872902059,
+      "mean_prob_failure_on_neg": 0.15692288877701835
+    },
+    "fractal_rt1": {
+      "accuracy": 0.3818984547461369,
+      "auc": 0.4966081822369247,
+      "f1": 0.5333333333333333,
+      "threshold": 0.20833654701709747,
+      "confusion_matrix": [
+        [
+          13,
+          273
+        ],
+        [
+          7,
+          160
+        ]
+      ],
+      "f1_global_thr": 0.5275862068965518,
+      "class_separation": -0.0005854223578535267,
+      "mean_prob_failure_on_pos": 0.46832873560711297,
+      "mean_prob_failure_on_neg": 0.4689141579649665
+    }
+  },
+  "history": {
+    "train_loss": [
+      0.6631118026044633,
+      0.5019751057458022,
+      0.460225141404097,
+      0.4222147151091952,
+      0.3698638808518771,
+      0.3626865118803311,
+      0.2772292454224923,
+      0.23269275010184007,
+      0.19848913317661226
+    ],
+    "val_loss": [
+      0.6346174598886416,
+      0.5185471220085254,
+      0.5126510119208922,
+      0.5362996108686695,
+      0.568194252725404,
+      0.6048850971632279,
+      0.7156464400020643,
+      0.926017353991763,
+      0.940555553847494
+    ],
+    "val_accuracy": [
+      0.6819277108433734,
+      0.7120481927710843,
+      0.6987951807228916,
+      0.7096385542168675,
+      0.6951807228915663,
+      0.7168674698795181,
+      0.7168674698795181,
+      0.7036144578313253,
+      0.7120481927710843
+    ]
+  }
+}

@@ -25,8 +25,7 @@ def label_reassemble(df: pd.DataFrame, seq_handler) -> pd.Series:
 
     1) Boolean ontology. Columns /grasp_failure_label.boolean.data or
        /grasp_failure_label.data, value interpreted as 1=failure, 0=success.
-       Populated either by the SDK plugin or by
-       scripts/backfill_reassemble_labels.py.
+       Populated by the SDK ingestion plugin.
 
     2) SegmentInfo ontology. Column /grasp_failure_label.segment_info.success,
        value interpreted as 1=success, 0=failure (polarity inverted vs Boolean).

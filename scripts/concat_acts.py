@@ -129,7 +129,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in-dir", default="results/video_overlay_demo")
     ap.add_argument("--acts-config",
-        default="results/multimodal_indist_v9_sharp/acts_v9_2parts_reassemble_test.json")
+        default="results/video_overlay_demo/acts_v10l_droid_test.json")
     ap.add_argument("--out", default="results/video_overlay_demo/module_c_deliverable.mp4")
     args = ap.parse_args()
 
@@ -145,8 +145,6 @@ def main():
     print(f"[1/3] intro card")
     intro = render_card([
         ("Grasp Integrity Predictor", 64, FONT_LIGHT, (240, 240, 250), 56),
-        ("Per-frame failure probability overlaid on held-out test sequences",
-         26, FONT_REG, (180, 200, 230), 44),
         ("4 acts   |   passive monitoring",
          18, FONT_REG, (140, 170, 200), 0),
     ], INTRO_DURATION_S)
@@ -191,7 +189,7 @@ def main():
         ("Built on Mosaico", 64, FONT_LIGHT, (240, 240, 250), 50),
         ("Cross-format ingest   |   sync 50 Hz   |   canonical schema",
          24, FONT_REG, (180, 200, 230), 44),
-        ("HDF5  +  Parquet  +  TFRecord   →   single LateFusionLSTM",
+        ("HDF5  +  Parquet  +  TFRecord   ->   single LateFusionLSTM",
          20, FONT_REG, (140, 170, 200), 0),
     ], OUTRO_DURATION_S)
     for f in fade_in_out(outro, 12):

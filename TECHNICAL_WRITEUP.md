@@ -1,211 +1,494 @@
-# Trying Mosaico on a Cross-Format Grasp Failure Classifier
+# Technical writeup: a cross-format grasp failure classifier on Mosaico
 
-I came across Mosaico, an open-source data platform for Physical AI, and wanted to see how much of a typical multi-dataset robotics data pipeline it would absorb. The setup I used as a stress test is a single `LateFusionLSTM` trained jointly on three heterogeneous manipulation datasets (Reassemble, DROID, Fractal RT-1), with the data-plumbing layer collapsed onto the platform.
+I came across Mosaico while looking for a clean way to train one model on several
+robotics datasets that are stored in incompatible formats. I read through how the
+platform works and reached out to the people building it; they told me they were about
+to release the ingestion side as a separate project,
+[mosaico-alchemy](https://github.com/mosaico-labs/mosaico-alchemy). To get a real feel
+for the platform I decided to build something deliberately simple: a single binary
+grasp-failure classifier trained on more than one dataset at once. This writeup is what
+I built and, more to the point, how I used Mosaico to do it.
 
-## What I Tried
+The goal was never to win a benchmark. It was to learn how Mosaico behaves when you
+train one model on two datasets stored in completely different formats, and to see what
+a uniform cross-format data layer surfaces that you would miss looking at each dataset
+on its own. DROID is stored as parquet in the RLDS layout and Fractal RT-1 as TFRecord;
+once both are in the catalog, the application code never touches either format again.
 
-The target was a binary grasp-failure classifier trained jointly on Reassemble (HDF5), DROID (h5 / ROS-bag layout) and Fractal RT-1 (TFRecord with the RLDS schema), all consumed through the same code path with no per-format branching, using [Mosaico](https://github.com/mosaico-labs/mosaico) as the data layer. The trained classifier reaches an overall AUC of 0.685 on a stratified held-out test split with calibrated probability output spanning the full [0.027, 0.999] range. The 0.685 figure is modest in absolute terms, and it reflects a structural ceiling set by the supervision granularity of two of the three datasets (DROID and Fractal RT-1 carry only episode-level outcome flags, not per-frame labels), not by the cross-format pipeline itself. Beyond the classifier numbers themselves, the application layer comes in at about 80 lines of dataset-specific code, against a rough estimate of 2000 lines for an equivalent pipeline built directly on `.h5` / `.tfrecord` / ROS-bag parsers.
+## Mosaico in brief
 
-## Why Mosaico
+Mosaico is a data platform for physical AI. You ingest recordings once, and from then
+on the application code talks to a uniform catalog over Apache Arrow instead of reading
+parquet, TFRecord or ROS bag files by hand. Two pieces carry this project:
 
-Combining three robotic datasets in three different storage formats normally means writing one parser per format, one synchronization routine per sample rate, one ontology mapping per topic naming convention, and a maintenance cost that grows superlinearly with the fourth dataset. The point of pulling [Mosaico](https://github.com/mosaico-labs/mosaico) into this project was strictly instrumental: have a single uniform DataFrame source consuming Reassemble (HDF5), DROID (h5 / ROS-bag) and Fractal RT-1 (TFRecord) through the same code path, with no per-format branching, so I could spend my time on the classifier instead of on three parsers.
+1. A query layer that selects sequences server side by metadata or by ontology field
+   values, the same way regardless of the underlying format.
+2. A streaming extraction layer (`DataFrameExtractor` plus `SyncTransformer`) that turns
+   a sequence into a dense, uniformly sampled pandas DataFrame.
 
-Three primitives show up throughout this post: an **Ontology** (a strictly-typed semantic model for one signal, e.g. `Pose`, `Boolean`, `CompressedImage`, `RobotJoint`; domain-specific ones like `SegmentInfo` live in plugin packs), a **Topic** (a time series of one ontology type), and a **Sequence** (a recording session bundling related topics with shared metadata). The manipulation pack [`mosaico-alchemy`](https://github.com/mosaico-labs/mosaico-alchemy) ships the ingestion plugins for the three datasets used here. For everything else (Rust daemon, storage layout, wire format) I defer to the project page.
+Installing the Python SDK is one line:
 
-## Datasets
+```bash
+pip install mosaicolabs
+```
 
-Three publicly available manipulation datasets sit in a single Mosaico catalog. Ingestion goes through the manipulation plugins in [`mosaico-alchemy`](https://github.com/mosaico-labs/mosaico-alchemy): each plugin declares the source layout, the ontology binding for every topic, and the payload iterator that turns raw bytes into typed messages.
+## Getting the data in with mosaico-alchemy
 
-| Dataset       | Source format | Sequences ingested | Frames at 50 Hz | Failure rate (sequence) |
-|---------------|---------------|--------------------|-----------------|-------------------------|
-| Reassemble    | HDF5          | 48                 | 700740          | 91.7 percent            |
-| DROID         | h5 ROS bag    | 1483               | 1470074         | 16.4 percent            |
-| Fractal RT-1  | TFRecord      | 874                | 620446          | 36.6 percent            |
-| Total         |               | 2405               | 2791260         | mixed                   |
+Ingestion plugins for the public datasets live in
+[mosaico-alchemy](https://github.com/mosaico-labs/mosaico-alchemy). The manipulation
+pack currently ships plugins for reassemble, droid, fractal_rt1 and mml. The flow is
+short: clone the repo, download the datasets you want from their original sources, then
+run the CLI to ingest them into your local Mosaico instance:
 
-These three formats differ in non-trivial ways: nanosecond timestamps and quaternions as fixed-length arrays in Reassemble, ROS-bag-style topic naming in DROID, RLDS nested step structures in Fractal RT-1. Sample rates span 30 Hz to 100 Hz within a single sequence, image codecs are heterogeneous, and the gripper signal is recorded on three incompatible scales. After ingestion, the Mosaico-managed footprint on disk holds the original source corpus of roughly 90 GB as immutable, indexed blobs, with Postgres carrying the structured metadata; the precomputed CNN feature cache adds 356 MB of fp16 spatial features on top.
+```bash
+mosaico_alchemy manipulation --datasets /path/to/droid /path/to/fractal20220817_data \
+  --host localhost --port 6726 --write-mode sync
+```
 
-## The Pipeline, Step by Step
+Everything below assumes the datasets are already in the catalog.
 
-Every sequence in every dataset goes through the same chain. The application code path is identical across the three formats, with no `if dataset == ...` branch downstream of the SDK call site.
+## Curating the training set with the query layer
+
+This is the part I leaned on the most. Before training I used the query layer to
+understand the catalog (counts per dataset, the natural failure prior, and which topic
+or metadata field carried the label), and then to pull a labelled pool of success and
+failure sequences per dataset. The selection lives in
+[`scripts/build_balanced_pools_via_mosaico.py`](scripts/build_balanced_pools_via_mosaico.py)
+and writes `results/pools_via_mosaico.json`. Every dataset goes through the same
+`MosaicoClient.query(...)` entry point; only the predicate differs per format.
+
+**DROID** carries an episode level boolean in its sequence metadata, so the success and
+failure pools are a pure server side query on `is_episode_successful`:
 
 ```python
-from mosaicolabs import MosaicoClient
-from mosaicolabs.ml import DataFrameExtractor, SyncHold, SyncTransformer
 from mosaicolabs.models.query import QuerySequence
 
-client = MosaicoClient.connect(host="127.0.0.1", port=6726)
-query = QuerySequence().with_user_metadata("dataset_id", eq=dataset_id)
-for item in client.query(query):
-    handler = client.sequence_handler(item.sequence.name)
-    extractor = DataFrameExtractor(handler)
-    sync = SyncTransformer(target_fps=50.0, policy=SyncHold())
-    parts = []
-    for sparse_chunk in extractor.to_pandas_chunks(topics=topics, window_sec=5.0):
-        parts.append(sync.transform(sparse_chunk))
-    dense = pd.concat(parts, ignore_index=True)
-    dense = label_adapters.label(dataset_id, dense, handler)
-    projected = feature_mapper.project(dataset_id, dense)
-    projected = feature_mapper.add_derived_features(projected)
+q_succ = (
+    QuerySequence()
+    .with_user_metadata("dataset_id", eq="droid")
+    .with_user_metadata("is_episode_successful", eq=True)
+)
+q_fail = (
+    QuerySequence()
+    .with_user_metadata("dataset_id", eq="droid")
+    .with_user_metadata("is_episode_successful", eq=False)
+)
+succ = sorted({it.sequence.name for it in client.query(q_succ)})
+fail = sorted({it.sequence.name for it in client.query(q_fail)})
 ```
 
-What this does, step by step:
+On the catalog this returns 5306 success and 1100 failure sequences, a natural failure
+prior near 17 percent. After the CNN precompute, 4340 of them carry a cached descriptor
+and feed the split.
 
-1. **Server-side query** (`MosaicoClient.connect` + `QuerySequence().with_user_metadata(...)`). The SDK translates the filter into a server-side `WHERE` on the metadata column; the indexed catalog returns only the sequences that match. No client-side scan, no filesystem traversal, no per-dataset branching on storage layout.
-2. **Sequence handle** (`client.sequence_handler(name)`). The catalog returns a typed handle into the indexed sequence, abstracting away the underlying storage location and surfacing the topics with their bound ontology types.
-3. **DataFrame injection** (`DataFrameExtractor.to_pandas_chunks`). The SDK streams the requested topics directly into pandas DataFrames over Apache Arrow with bounded memory, regardless of how the source is laid out underneath. The DataFrame layout is the same across the three datasets, so downstream code does not have to branch on storage format.
-4. **Synchronization** (`SyncTransformer(target_fps=50.0, policy=SyncHold())`). Heterogeneous sample rates land on a single 50 Hz grid. The `SyncHold` forward-fill policy preserves quaternion unit norm (interpolation would silently corrupt orientation data) and is safe across booleans, floats, and array-typed payloads.
-5. **Application projection** (`feature_mapper.project`). The SDK exposes a uniform dot-notation schema (`<topic>.<ontology_tag>.<field>`) across the bound ontology types, and the application maps that schema onto the canonical 8-feature representation of the domain. The projection layer is small but is the only piece that knows about the three datasets individually.
-6. **Derived features** (`add_derived_features`). Finite difference on the uniform timeline produced by `SyncTransformer`, yielding 7 velocity proxies that lift the kinematic vector to 15 dimensions.
-7. **Label adapters** (`label_adapters.label`). Failure annotations are read through the same SDK handle, never from side-car files. The Reassemble label topic is read from either `/grasp_failure_label.boolean.data` (`Boolean` ontology) or `/grasp_failure_label.segment_info.success` (`SegmentInfo` ontology). I contributed the `SegmentInfo` ontology and a corresponding Reassemble plugin update upstream as part of this work (`mosaico-labs/mosaico-alchemy#4`). Writing the actual Reassemble label backfill was where I hit the main piece of SDK friction in this project. For what is conceptually a one-line operation (append these `(timestamp, value)` samples to this topic on this sequence), there is no one-shot helper, so a small backfill ended up composing `sequence_update`, explicit topic creation, opening a writer, wrapping each sample as the right `Message` type, and pushing them one at a time: five concepts in a row for one operation. A helper like `h.append_topic("/grasp_failure_label", samples=[(t, v), ...], ontology=Boolean)` would have collapsed those into a single call. If an equivalent helper already exists in the SDK I missed it, but I did not find it from the docs.
-8. **Same chain at evaluation time**. Inference at training time and inference at evaluation time use this exact chain, so the evaluation loop never diverges from the training pipeline.
+**Reassemble** (which I tried early on and dropped from the released model) exposes its
+label as a Boolean ontology value on a dedicated topic, so the same idea runs at the
+ontology level. This is the cleanest illustration of the query layer, because the
+predicate runs on the field value itself, combined server side with a topic filter and a
+dataset filter in a single call:
 
-## How Much Application Code I Wrote
+```python
+from mosaicolabs import Boolean
+from mosaicolabs.models.query import (
+    QueryOntologyCatalog, QuerySequence, QueryTopic,
+)
 
-With parsing, decoding, synchronization and ontology binding handled upstream by the SDK, the only application code I had to write lives in `data/feature_mapper.py`: 8 base features, 7 derivatives, three projection functions (`project_reassemble`, `project_droid`, `project_fractal_rt1`) totalling roughly 80 lines. Mosaico canonicalizes transport and schema; cross-dataset semantics (what does "gripper open" mean across three control conventions) stays the application's responsibility, as it should. The single semantic decision at the application layer is the per-dataset gripper binarization, with thresholds 0.025 (Reassemble, meters), 0.5 (DROID, normalized), 0.5 (Fractal, quasi-binary), calibrated from histograms in `results/audit_cache.json`. After binarization `gripper_state` is a binary signal across the three datasets and `gripper_vel` becomes a clean edge detector for opening and closing.
-
-For comparison, a from-scratch implementation would need a dedicated HDF5 parser for Reassemble (with `segments_info` traversal, two-finger gripper aggregation, per-topic JPEG decoding), an h5 ROS-bag-style parser for DROID (cartesian pose unwrapping, episode-level metadata, MP4 wrist-camera decoding at 30 fps), a TFRecord/RLDS parser for Fractal RT-1 (nested step structure traversal, terminal reward extraction, image byte unpacking), plus a custom multi-rate synchronization layer with quaternion-safe policies. A reasonable estimate is around 2000 lines of bespoke parsing and synchronization code, before any modelling work begins. Here the application side stays at about 80 lines on top of `mosaicolabs`.
-
-## Network Architecture
-
-The classifier is a small but carefully shaped network: 108 547 trainable parameters split across two parallel temporal encoders, one per modality, with a learned attention head that picks the informative frames out of every 50-frame window. The shape of the network was driven by three constraints that came out of the data analysis early on:
-
-- **Two modalities at very different scales.** A 15-dim kinematic vector and a 64-dim visual descriptor (post-IPCA, originally 360 from MobileNetV3) cannot share a hidden state without one drowning the other. A late-fusion design keeps each modality's temporal representation independent up to the head.
-- **Mixed supervision granularity across datasets.** Reassemble has per-frame labels; DROID and Fractal RT-1 carry only episode-level outcomes. A "last timestep" readout would discard most of the useful evidence for the latter two, so each stream uses a learned attention pool that picks where to look across the 50-frame window.
-- **CPU-only training budget.** Training had to fit in roughly six minutes wall-clock on a Ryzen 7 with no GPU. The visual encoder (MobileNetV3 Small, ImageNet-pretrained) is therefore frozen and its forward pass cached to disk once per sequence; only the temporal head, the two attention layers and the fusion linear are trained.
-
-### Topology
-
-A late-fusion BiLSTM with attention pooling. Two streams encode kinematic and visual signal independently; their pooled outputs are concatenated and fed to a single linear head.
-
-```mermaid
-flowchart TD
-  kin["x_kin<br/>(B, 50, 15)"] --> BL1["BiLSTM 15&rarr;64<br/>1 layer, bidirectional"]
-  BL1 --> A1["softmax attention<br/>pool over T=50"]
-  A1 --> KP["kin_pooled<br/>(B, 128)"]
-  vis["x_cnn<br/>(B, 50, 64)<br/>post-IPCA from<br/>MobileNetV3 360-d"] --> BL2["BiLSTM 64&rarr;64<br/>1 layer, bidirectional"]
-  BL2 --> A2["softmax attention<br/>pool over T=50"]
-  A2 --> VP["vis_pooled<br/>(B, 128)"]
-  KP --> CAT["concat &rarr; (B, 256)"]
-  VP --> CAT
-  CAT --> DROP["Dropout 0.35"]
-  DROP --> FC["Linear 256&rarr;1"]
-  FC --> LOG["logit"]
+# Failure: /grasp_failure_label.boolean.data == True
+fail = sorted({
+    it.sequence.name
+    for it in client.query(
+        QuerySequence().with_user_metadata("dataset_id", eq="reassemble"),
+        QueryTopic().with_name("/grasp_failure_label"),
+        QueryOntologyCatalog().with_expression(Boolean.Q.data.eq(True)),
+    )
+})
 ```
 
-Total trainable parameters: **108 547**. Implementation in [`models/cached_lstm.py`](models/cached_lstm.py) (class `LateFusionLSTM`).
+The topic name filter matters: without it the Boolean predicate would match every
+boolean field in every topic of the catalog.
 
-### Design Choices
+**Fractal RT-1** does not expose a ready made success flag. Its success signal is the
+reward at the terminal step of the episode, which the ontology query cannot express
+(it matches point values, not the last sample of a topic). So I run a hybrid: a server
+side name query, then read the per episode label from the precompute cache, where it
+was derived from the Mosaico ingested reward stream by
+[`data/label_adapters.py`](data/label_adapters.py). It is one extra step than DROID, but
+the label still comes from Mosaico ingested data:
 
-- **Late fusion, not early fusion.** Kinematic (15 dim) and visual (64 dim) streams differ by ~4× in width and live on different scales. An early-fusion BiLSTM would let the dominant visual stream drown the kinematic signal in the joint hidden state. Splitting the encoders keeps each modality's temporal representation independent up to the head. An early-fusion variant (`CachedFeatureLSTM`) is also implemented in `models/cached_lstm.py`.
-- **Learned attention pool over time, not last-timestep readout.** DROID and Fractal RT-1 carry episode-level labels (one bit per ~10 s sequence, not one bit per frame). Any frame in a 50-frame window is informative, so a fixed "use the last timestep" readout discards useful evidence. Each stream gets a learned softmax attention vector over T = 50, applied independently to kin and vis. The `attn_pool` flag in `LateFusionLSTM` toggles between learned-attention and last-timestep readout; the released run uses the learned attention.
-- **IPCA reduces visual to 64 dims.** Raw MobileNetV3 features are 360-dim; reducing to 64 brings them in line with the kin BiLSTM hidden width. IPCA is fit on the training split only and applied unchanged downstream.
-- **MobileNetV3 layer 6 + `AdaptiveMaxPool2d(3)`.** Tapping layer 6 (not the final classifier head) and pooling to a 3×3 spatial grid preserves geometric structure (where in the frame the gripper / object is) instead of collapsing to a single semantic vector.
-- **Frozen visual encoder + precomputed cache.** CPU training is feasible only if the CNN forward pass happens once and is reused across N runs. The cache is 356 MB of fp16 spatial features (already git-ignored).
-- **15-feature canonical kinematic schema.** 8 base features (3 end-effector position + 4 quaternion + 1 gripper scalar) + 7 finite-difference derivatives. The 8-base set is the largest common denominator across the three datasets; the 7 derivatives are the only per-frame time-varying signal for episode-labeled datasets.
-- **Per-dataset gripper binarization.** Reassemble records gripper in meters, DROID normalized, Fractal binary. Without canonicalization the z-scored value identifies the dataset rather than the state. Thresholds (`Reassemble 0.025`, `DROID 0.5`, `Fractal 0.5`) calibrated from histograms.
+```python
+import numpy as np
+from mosaicolabs.models.query import QuerySequence
 
-### Training Setup
+q_all = QuerySequence().with_user_metadata("dataset_id", eq="fractal_rt1")
+all_names = sorted({it.sequence.name for it in client.query(q_all)})
 
-| Hyperparameter | Value | Note |
-|---|---|---|
-| Sequence length | 50 frames (1 s @ 50 Hz) | sliding window, stride 50 (no overlap) |
-| Batch size | 64 | |
-| Epochs | 30 | |
-| Optimizer | Adam, `lr=1e-3`, `weight_decay=1e-3` | |
-| Scheduler | `ReduceLROnPlateau` | |
-| Loss | `BCEWithLogitsLoss`, `pos_weight=4.522` | auto-computed from class imbalance |
-| Dropout | 0.35 (fusion head) | LSTM encoders with `num_layers=1` have no internal dropout by PyTorch convention |
-| Kin noise | `std=0.02` | Gaussian, training only |
-| Sampler | `WeightedRandomSampler` | oversamples minority class |
-| Gradient clip | 1.0 | |
-| SWA | from epoch 8 | |
-| Seed | 42 | |
-| Wall time | ~6 min on Ryzen 7 CPU | no GPU |
+# Label per sequence = terminal /step/reward > 0, read from the precompute cache
+# (the same Mosaico ingestion pipeline that produced the features).
+for name in all_names:
+    p = cache_by_name.get(name)
+    if p is None:
+        continue
+    with np.load(p) as z:
+        label = int(np.asarray(z["label"]).max() > 0.5)
+    if label == 1:
+        fail.append(name)
+    else:
+        succ.append(name)
+```
 
-Full configuration in [`results/multimodal_indist_v9_sharp/results.json`](results/multimodal_indist_v9_sharp/results.json).
+Fractal returns 3972 sequences in the catalog; 3093 carry a cached descriptor (1950
+success, 1143 failure), a natural failure prior near 37 percent, spread across 471
+distinct language instructions.
 
-<p align="center">
-  <img src="results/multimodal_indist_v9_sharp/loss_curves.png" width="600"/><br/>
-  <em>Training and validation loss across the 30 epochs. Validation loss plateaus shortly after the SWA window opens at epoch 8.</em>
-</p>
+A note on the 65/35 balance, because it is easy to overstate. The queries return the
+pools at their natural prior, not balanced. The 65 percent success and 35 percent
+failure ratio is applied afterwards, when assembling the training set, by
+`split_by_pools_proportional` in
+[`run_training_cached.py`](run_training_cached.py). It builds a 70/15/15 split per
+dataset, balances only the training partition to the chosen success ratio, and leaves
+validation and test at the natural prior so the reported metrics reflect production
+conditions. Mosaico does the cross-format selection and labelling; the prior is a
+sampling choice on top of the pools it returns.
 
-### Results
+## Building the batches
 
-Test set, stratified per-dataset 70 / 15 / 15 split (seed 42), threshold tuned on the validation split.
+For each selected sequence the pipeline runs the same Mosaico chain, in
+[`data/cross_dataset_ingestor.py`](data/cross_dataset_ingestor.py):
 
-| Metric | Value |
-|---|---|
-| Overall AUC (test) | **0.685** |
-| Overall F1 (test, threshold 0.806) | **0.334** |
-| Failure precision (test, threshold 0.806) | 0.28 |
-| Failure recall (test, threshold 0.806) | 0.42 |
-| Class separation (P_fail − P_succ) | 0.173 |
-| Reassemble AUC | 0.626 |
-| DROID AUC | 0.614 |
-| Fractal RT-1 AUC | 0.563 |
-| P(failure) range observed | [0.027, 0.999] |
-| Confident failure (P > 0.8) window fraction | 25.1 % |
-| Confident success (P < 0.2) window fraction | 13.8 % |
+![Cross-format data pipeline](docs/figures/data_pipeline.png)
 
-Class separation of 0.173 means that, on average, a window drawn from a failing sequence receives a predicted failure probability about 17 percentage points higher than a window drawn from a successful one. This is a weak but consistent signal: the model is not confidently distinguishing the two classes in absolute terms, but it is systematically biased in the right direction across all three datasets. In a safety-monitoring context this matters more than the absolute threshold: a monotone risk signal that rises before the grasp collapses is useful even if it never crosses 0.9, provided the ordering is reliable. The low separation is the expected outcome of training predominantly on episode-level labels; the model cannot localize when within the sequence the failure originates, only that the sequence as a whole is more or less failure-prone.
+```python
+h = self._client.sequence_handler(seq_name)
 
-<p align="center">
-  <img src="results/multimodal_indist_v9_sharp/roc_curve.png" width="500"/><br/>
-  <em>ROC curve on the overall held-out test set. AUC = 0.685, comfortably above the 0.5 chance line.</em>
-</p>
+ex = DataFrameExtractor(h)
+sync = SyncTransformer(target_fps=self._fps, policy=SyncHold())  # self._fps = 50.0
 
-<p align="center">
-  <img src="results/multimodal_indist_v9_sharp/confusion_matrix.png" width="500"/><br/>
-  <em>Confusion matrix at the F1-optimal threshold (0.806). Recall on the failure class is intentionally favored over precision, which suits a safety-monitoring use case.</em>
-</p>
+dense_parts = []
+for sparse in ex.to_pandas_chunks(topics=topics, window_sec=self._window_sec):
+    if sparse is None or sparse.empty:
+        continue
+    dense_chunk = sync.transform(sparse)   # state carried across chunk boundaries
+    if dense_chunk is None or dense_chunk.empty:
+        continue
+    dense_parts.append(dense_chunk)
+dense = pd.concat(dense_parts, ignore_index=True)
 
-## Cross Format Generalization
+# Label BEFORE projection: /step/reward, /step/is_terminal and /grasp_failure_label
+# need to be still in the dense df.
+dense = label_adapters.label(dsid, dense, h)
 
-A single set of weights, trained jointly on data canonicalized from HDF5, h5 ROS-bag and TFRecord, generalizes above chance to each of the three storage formats without dataset-specific code paths anywhere in the model or the loader. Reassemble (frame-level supervision) leads the per-dataset numbers; DROID and Fractal RT-1 (episode-level supervision) trail it but stay clearly above the 0.5 chance line.
+projected = feature_mapper.project(dsid, dense)        # canonical 15-feature schema
+projected = feature_mapper.add_derived_features(projected)  # finite-difference velocities
+```
 
-<p align="center">
-  <img src="results/multimodal_indist_v9_sharp/per_dataset_auc.png" width="600"/><br/>
-  <em>AUC broken down by source format. All three sit above 0.5 chance; Reassemble leads because it is the only dataset with frame-level labels.</em>
-</p>
+The steps are:
 
-The structural ceiling on DROID and Fractal is set by their supervision granularity, not by the cross-format pipeline: any window inside an episode inherits the episode-level label, so the model cannot learn to localize the failure moment within the sequence. This is a property of the data, not of the model. Calibration is consistent across formats: the classifier emits probabilities across the full unit interval, so the threshold 0.806 selects a calibrated decision rather than chasing the small differences typical of an under-separated classifier.
+1. `client.sequence_handler(name)` gives a handle to the sequence.
+2. `DataFrameExtractor(h).to_pandas_chunks(topics, window_sec)` streams the requested
+   topics as sparse, per topic DataFrames, one window at a time, so memory stays bounded.
+3. `SyncTransformer(target_fps=50.0, policy=SyncHold())` resamples every chunk onto a
+   uniform 50 Hz grid. `SyncHold` is a forward fill policy: it carries the last valid
+   sample forward until a new one arrives. This is what lets DROID (already high rate)
+   and Fractal RT-1 (3 Hz native, an upsample of roughly 16x) line up on the same time
+   axis, and it is safe on booleans, floats and quaternions, where linear interpolation
+   would either be meaningless or break the unit norm. The transformer keeps state
+   across chunk boundaries, so streaming a long sequence in windows gives the same
+   result as processing it whole.
+4. [`data/label_adapters.py`](data/label_adapters.py) attaches the episode label before
+   projection, while the reward and terminal topics are still present in the dense df.
+5. [`data/feature_mapper.py`](data/feature_mapper.py) projects the dataset specific
+   columns onto a canonical 15 feature kinematic schema (3 end effector position, 4 end
+   effector quaternion, 1 binarized gripper, plus 7 finite difference velocities) and
+   binarizes the gripper per dataset so the raw scale does not leak the dataset identity
+   through the bridge.
 
-There is also an open caveat on Reassemble specifically: its 91.7 % failure rate introduces a dataset-identity confound. A model that learns to recognize Reassemble-specific kinematic or visual signatures (rather than the failure signal itself) would still score above chance on the Reassemble test split. The per-dataset AUC numbers alone cannot rule this out. A clean ablation would be to train without Reassemble and measure whether the DROID and Fractal RT-1 AUCs change materially; a stable result would suggest the joint representations are genuinely cross-format rather than anchored to the dominant-prior source.
+The visual stream is precomputed once by
+[`scripts/precompute_cnn_features.py`](scripts/precompute_cnn_features.py). For every
+sequence, every frame is resized to 112x112 and pushed through a frozen ImageNet
+MobileNetV3 Small, tapping layer 6 followed by `AdaptiveMaxPool2d(3)`, which yields a
+360 dimensional spatial descriptor per frame stored at fp16. Freezing and caching the
+encoder is what makes training on CPU realistic: the expensive forward pass happens once
+and is reused across every training run.
 
-<p align="center">
-  <img src="results/multimodal_indist_v9_sharp/per_dataset_confusion.png" width="900"/><br/>
-  <em>Per-dataset confusion matrices at the F1-optimal threshold for each format (Reassemble 0.039 is aggressive because its prior is 91.7 % failure; DROID 0.449 and Fractal 0.664 sit in the more conventional range).</em>
-</p>
+The application code that sits on top of Mosaico is small, on the order of a few dozen
+lines per dataset, and it is the same code for both formats. That is the first concrete
+thing the platform bought me.
 
-## Closing the Loop on the Recorded Trajectories
+## The model
 
-Beyond the test-set metrics, the classifier runs at 50 Hz over the cached kinematic and CNN tensors of held-out test sequences, and its per-frame `P(failure)` is overlaid on top of the original source video frames produced by Mosaico (Reassemble `/hand` blob at 30 fps, DROID exterior camera at 15 fps). Inference runs against the windows the SDK produced at training time, and the rendered frames are the actual recordings the classifier scored: what the viewer sees is what the model saw. All sequences used for these overlays come from the 15 % held-out test split persisted at `results/test_split.json` (stratified per dataset, seed 42, never seen during training or validation tuning).
+The released model is `LateFusionLSTMMIL` in
+[`models/mil_attention.py`](models/mil_attention.py), with 237635 trainable parameters.
 
-## Practical Takeaways
+![LateFusionLSTMMIL architecture](docs/figures/architecture.png)
 
-A few observations from this experiment.
+It is built as Multiple Instance Learning. DROID and Fractal carry one label per
+episode, replicated onto every frame at precompute time. A plain window classifier
+trained on that signal is told that the calm approach windows of a failing episode are
+themselves failures, which produces contradictory gradients and a model that plateaus
+near chance. MIL is the elegant fit: a bag is one sequence, an instance is one 50 frame
+window, the bag label is known, and a gated attention pool learns which windows carry
+the signal and emits a per-window weight along the way.
 
-The application code on top of the SDK ended up being three canonical projection functions and a per-dataset gripper threshold table, around 80 lines per dataset. The training script, the dataset wrapper, and the renderer are dataset-agnostic by construction; adding a fourth dataset would mean one new projection function and one threshold, nothing else.
+The tensor flow per bag is:
 
-`SyncTransformer` was the key piece for me here. Joint torque at 100 Hz, vision at 30 Hz, and sparse event topics arrive at the model on a single 50 Hz grid with consistent timestamps; `SyncHold` keeps quaternion unit norm intact, which naive interpolation does not. None of this logic appears in application code, and writing it from scratch for three formats is the kind of work that easily eats more time than the model itself.
+```
+X_kin : (B, M, T=50, 16)        16-D kinematics per frame
+X_cnn : (B, M, T=50, 360)       360-D cached CNN descriptor per frame
+nl_emb: (B, 512)                USE instruction embedding (Fractal); DROID -> null token
 
-The same `predict_proba` call that produced the test-set metrics fires against held-out test windows during overlay rendering, in the same DataFrame layout produced at training time. Training-time and evaluation-time inference share one interface and one data contract, which kept the overlay rendering a couple-hours job rather than a separate sub-project.
+WindowEncoder (per window, attn_pool on, uni LSTM):
+  LSTM_kin  16  -> 64, temporal softmax attention pool -> 64
+  LSTM_vis  360 -> 64, temporal softmax attention pool -> 64
+  concat                                              -> 128-D instance embedding
 
-One piece of the workflow did not fit cleanly into the catalog: the trained artifacts themselves. The model is trained on Mosaico data and runs back on Mosaico data, but the `.pt` checkpoint and the `.npz` scaler still live on the filesystem and are loaded by path at inference time, because I did not find a first-class way to attach an ML artifact (a checkpoint, a fitted scaler, an evaluation summary) to a sequence or to a run inside the catalog. The training-to-inference loop is otherwise clean; this is the one piece of state that ended up outside.
+NL concat (pre-pool):
+  nl_proj   Linear(512, 64) Xavier, broadcast over M  -> instance 128 + 64 = 192-D
 
-The honest limit of the result is bounded by supervision granularity, not by the data layer: Reassemble is the only dataset with per-frame failure labels, DROID and Fractal RT-1 carry episode-level outcome flags only. With 48 Reassemble sequences contributing the only frame-level supervision, an overall AUC of 0.685 is consistent with that structural ceiling. A more accurate classifier would require additional per-frame annotations, which is orthogonal to what the data platform does.
+GatedAttentionPool (Ilse et al., 2018):
+  192-D instances -> softmax gated attention over valid windows -> 192-D bag embedding
 
-## Reproducibility
+Head:
+  Linear(192, 128) -> ReLU -> Dropout(0.35) -> Linear(128, 1) -> logit
+```
 
-Reproducing the project from raw data takes roughly three hours of wall-clock total. The end-to-end procedure is documented in [`README.md`](README.md): clone the repository, bring up the Postgres + MinIO + `mosaicod` stack with `docker compose -f docker/compose-training.yml up -d`, ingest the three datasets via the SDK plugins, precompute the CNN cache once with `scripts/precompute_cnn_features.py` (about 3 hours, idempotent), train with `scripts/run_v9.sh released` (about 6 minutes), and render the per-act overlays with `scripts/video_overlay_demo.py`. All hyperparameters, the random seed (42), and the per-dataset metrics are persisted to `results/multimodal_indist_v9_sharp/results.json`.
+The window encoder reuses the late-fusion recipe: a unidirectional LSTM over the
+kinematics and another over the CNN features, each with a temporal attention pool, then
+concatenated.
 
-## References and Acknowledgments
+```python
+def forward(self, x_kin, x_cnn):
+    kin_out, _ = self._lstm_kin(x_kin)
+    vis_out, _ = self._lstm_vis(x_cnn)
+    a_kin = torch.softmax(self._attn_kin(kin_out), dim=1)
+    kin_pooled = (a_kin * kin_out).sum(dim=1)
+    a_vis = torch.softmax(self._attn_vis(vis_out), dim=1)
+    vis_pooled = (a_vis * vis_out).sum(dim=1)
+    return torch.cat([kin_pooled, vis_pooled], dim=-1)
+```
 
-- Source repository: [github.com/EdoardoBambini/grasp-predictor](https://github.com/EdoardoBambini/grasp-predictor).
-- Mosaico, the data platform for Physical AI: [mosaico.dev](https://mosaico.dev), [github.com/mosaico-labs/mosaico](https://github.com/mosaico-labs/mosaico). Python SDK package `mosaicolabs`.
-- Manipulation pack and ingestion plugins: [github.com/mosaico-labs/mosaico-alchemy](https://github.com/mosaico-labs/mosaico-alchemy).
-- Reassemble dataset (HDF5 manipulation recordings).
-- DROID dataset (large scale teleoperated manipulation, h5 / ROS bag layout).
-- Fractal RT-1 dataset (RT-1 robotics transformer rollouts, RLDS / TFRecord format).
-- MobileNetV3 Small ImageNet weights from `torchvision`.
+The language instruction is encoded with a Universal Sentence Encoder (512 dimensions),
+projected to 64 with a Xavier initialised linear layer, and concatenated to every
+instance before the bag pool. DROID has no instruction, so it routes through a learnable
+null token selected per bag by an `is_droid` mask. Routing language pre-pool through a
+Xavier linear (rather than an identity initialised FiLM block) keeps gradient flowing
+from step 0:
+
+```python
+if nl_emb is None:
+    nl_in = self.nl_null.expand(B, -1)
+elif is_droid is not None:
+    null_expanded = self.nl_null.expand(B, -1)
+    nl_in = torch.where(is_droid.view(B, 1), null_expanded, nl_emb)
+else:
+    nl_in = nl_emb
+nl_p = self.nl_proj(nl_in)                    # (B, nl_concat_dim)
+nl_p = nl_p.unsqueeze(1).expand(B, M, -1)     # (B, M, nl_concat_dim)
+win_emb = torch.cat([win_emb, nl_p], dim=-1)
+```
+
+The bag pool is the Gated Attention pool of Ilse et al. (2018). It scores each instance
+with a gated nonlinearity, softmax normalizes over the valid windows of the bag, and
+sums:
+
+```python
+v = torch.tanh(self._V(H))
+u = torch.sigmoid(self._U(H))
+logits = self._w(v * u).squeeze(-1)           # (B, M)
+if mask is not None:
+    logits = logits.masked_fill(~mask, float("-inf"))
+attn = torch.softmax(logits, dim=1)
+bag = (attn.unsqueeze(-1) * H).sum(dim=1)
+```
+
+The 16th kinematic feature deserves a note. The 15 canonical features are shared by both
+datasets. Fractal RT-1 also records a commanded gripper signal, so a 16th channel
+carries the difference between commanded and sensed gripper closedness. DROID has only
+the sensed value, so its 16th channel is zero padded at load time.
+
+Training uses symmetric (plain) binary cross entropy with `pos_weight` 1.0, Adam at 1e-3
+with weight decay 1e-3, `ReduceLROnPlateau` (factor 0.5, patience 2), stochastic weight
+averaging from epoch 8, and PCGrad gradient surgery, which splits the loss per dataset
+and projects conflicting gradients so one dataset does not cancel the other. Batches are
+16 bags, dropout 0.35.
+
+## Iteration history
+
+The released model is the result of a sequence of changes. The table below lists the per
+dataset test AUC at each step. Versions v10f through v10i are three seed means; v10l is a
+three seed mean as well, and the released checkpoint is seed 7. v9 is an earlier single
+seed baseline that trained on three datasets at the natural prior.
+
+| Version | Key change | DROID AUC | Fractal AUC |
+|---------|------------|-----------|-------------|
+| v9 | three datasets, natural prior, window level | 0.614 | 0.563 |
+| v10f | MIL with Gated Attention pooling | 0.667 | 0.550 |
+| v10g | symmetric loss, masked pooling | 0.704 | 0.514 |
+| v10h | window filtering, uni LSTM, no PCA, plain BCE | 0.945 | 0.511 |
+| v10i | gripper command minus sensed residual | 0.970 | 0.471 |
+| v10k | language conditioning via FiLM | 0.960 | 0.498 |
+| v10l | PCGrad plus language embedding concat pre pool | 0.942 | 0.495 |
+
+The v9 number reported elsewhere (overall AUC 0.685, class separation 0.173) was
+inflated by a dataset identity confound: Reassemble's failure rate in that run was above
+90 percent, so the network could partly shortcut "this looks like Reassemble" to
+"failure". Removing Reassemble and balancing the prior removed that shortcut, which is
+why the early v10 overall numbers look lower before the architectural cleanup brought
+DROID up sharply.
+
+The four changes in v10h are the ones that moved DROID from the high 0.60s to 0.945.
+First, window filtering: a DROID failure is impulsive and concentrated in the last
+second or two, so most windows of a failure bag look like success windows and the gated
+attention pool over-smooths toward a mean. Restricting each DROID failure bag to its
+last 30 percent of windows before the pool, while computing the bag label before
+filtering, fixes this. Second, a unidirectional LSTM: a bidirectional encoder lets the
+representation at an early frame depend on the conclusion of the sequence, which for a
+causal failure task is a form of leakage and also flattens the embeddings the pool sees.
+Third, dropping the PCA reduction of the visual features: the failure cues live in low
+variance, high frequency components that a variance preserving PCA discards, so the LSTM
+gets the full 360 dimensional descriptor. Fourth, plain symmetric binary cross entropy
+instead of an asymmetric loss whose margin created a dead zone and pinned predictions in
+a narrow band.
+
+v10i added the gripper command residual described above. v10k tried to condition on
+language through FiLM, and v10l replaced that with concatenating the sentence embedding
+into every instance before the pool and adding PCGrad. On DROID these refinements pushed
+AUC to 0.91 on the released seed (0.94 averaged over three seeds).
+
+## Results
+
+From `results/multimodal_indist_v10l_seed7/results.json` (the released seed), with
+validation and test at each dataset's natural prior:
+
+![Per-dataset class separation and AUC](docs/figures/class_separation.png)
+
+On DROID the model is production grade. Test AUC 0.91, class separation 0.65 (mean
+predicted failure probability 0.80 on failure sequences and 0.15 on success sequences),
+accuracy 0.91. Across three seeds DROID averages AUC 0.94 +/- 0.03 and class separation
+0.71 +/- 0.04: strong and stable.
+
+On Fractal RT-1 the same weights, in the same forward pass, return AUC 0.51 with class
+separation essentially zero (mean predicted failure probability 0.51 on both success and
+failure sequences), accuracy 0.39. Across three seeds Fractal class separation is
+0.00 +/- 0.00 and AUC 0.50 +/- 0.01: chance. The class separation figure above shows the
+contrast directly, two well separated bars on DROID and two nearly identical bars on
+Fractal.
+
+![v10l training curves](docs/figures/loss_curves.png)
+
+The training curves show the validation loss starting to rise after a few epochs, which
+is why best model selection and SWA matter; the released checkpoint is the best
+validation epoch.
+
+## The finding: why Fractal stays at chance
+
+Fractal's AUC stayed inside a narrow band around 0.5 across every architectural change I
+made, from MIL pooling to window filtering to the language embedding. That invariance is
+not an optimization failure. It is a property of the labels.
+
+Fractal RT-1 pools hundreds of distinct tasks under one dataset id, with 471 different
+language instructions in the slice I used. The label is the reward at the terminal step,
+which measures task success, not grasp success. The same physical motion carries
+opposite labels depending on the instruction that opened the episode: a gripper
+releasing an object onto a table is a success for "place the can on the table" and a
+failure for "put the can in the drawer". A classifier that sees the kinematic and visual
+streams is asked to map nearly identical inputs to opposite targets, so the gradient
+collapses to the prior and the logits flatten.
+
+v10l does feed in the instruction, as a Universal Sentence Encoder embedding
+concatenated to every instance. It moved Fractal only marginally, from chance to about
+0.54 AUC. The honest reading is that simply having the instruction present is not enough
+at this scale. Methods that succeed at multi-task failure detection extract features from
+a vision language action model whose latent space already fuses observation and
+instruction; a model with a few hundred thousand parameters that concatenates a sentence
+vector to a small LSTM cannot reconstruct that fusion. The bottleneck on Fractal is the
+supervision semantics, not the data plumbing.
+
+This is a clean negative result because of how it was produced. Every intervention that
+helped DROID was applied to Fractal in the same training run, the same forward pass and
+the same loss, and none of them moved Fractal out of the chance band. The cross-format
+pipeline treats both datasets identically; what differs is the meaning of their labels.
+
+## What the cross-format layer made possible
+
+The reason this is worth writing down is that the asymmetry is invisible if you study
+either dataset alone. Training a model on DROID alone, you would conclude the approach
+works. Training on Fractal alone, you might blame your architecture or your tuning.
+Putting both through one pipeline, with identical architecture and loss, makes the
+dataset the only variable, and the result localizes the problem precisely: not the data
+plumbing, not the network, but the meaning of one dataset's supervision. Surfacing that
+kind of cross-dataset insight is exactly what a uniform data layer is for. Mosaico did
+not solve the Fractal problem; it put me in a position to find it.
+
+## Demo: online failure monitoring
+
+The DROID model is strong enough to watch in real time, and that is what the demo does.
+[`scripts/video_overlay_demo.py`](scripts/video_overlay_demo.py) replays DROID episodes
+held out from training, validation and test, and draws the model's per-window failure
+probability on top of the exterior camera as the episode unfolds. The probability is a
+running readout over the windows observed so far, so the overlay reads like a live grasp
+integrity monitor: it stays low through a clean approach and rises as the model picks up
+the signature of a failing grasp.
+[`scripts/concat_acts.py`](scripts/concat_acts.py) stitches the selected clips into one
+short timeline. The shipped `results/video_overlay_demo/acts_v10l_droid_test.json`
+picks four held-out episodes, two that fail and two that succeed, and the same model and
+weights from the released checkpoint drive every frame. With the source DROID videos on
+disk it regenerates with:
+
+```bash
+python scripts/video_overlay_demo.py --droid-parquet-root /path/to/droid/data
+python scripts/concat_acts.py
+```
+
+It is a compact way to show the gated attention pool doing its job: the windows it weighs
+most heavily are the ones where the grasp actually goes wrong.
+
+## Limitations and rough edges
+
+The one real friction in selection was Fractal RT-1, and it is more a property of the
+dataset than of Mosaico. DROID and Reassemble each expose a success signal the catalog
+can filter on directly, an episode boolean in DROID's metadata and a Boolean ontology
+value on a Reassemble topic, so their pools are a pure server side query. Fractal carries
+no episode level success field at all: its only success signal is the reward at the
+terminal step, a per step time series. So for Fractal I query the sequence names server
+side and read the per episode label from the cache, where it was derived from the
+ingested reward stream. Any pipeline would have to derive that flag somewhere, since the
+dataset simply does not ship one; computing it from the terminal reward at ingest and
+writing it into the sequence metadata would make Fractal filterable exactly like the
+other two. It is worth being precise that such a flag would mean task success conditioned
+on the instruction, a different kind of label from DROID's mechanical grasp outcome, so
+it would help curation without changing the learnability discussed in the finding.
+
+## What I liked and what could be smoother
+
+What worked well, restated plainly: one query entry point across parquet and TFRecord,
+server side selection by metadata and by ontology value, a streaming extractor that
+reduced multi rate alignment to a single policy choice, and an application layer that
+stayed small and format agnostic. For a project whose whole point was to try the
+platform, those are the parts that did the work.
+
+The one addition I would genuinely want is a place to keep the trained model. Mosaico
+versions and serves the data and the curation that produced this checkpoint, but the
+model itself ends up outside the catalog: there is no way to register the released
+checkpoint as an artifact next to the dataset slice and the queries it came from. Storing
+the trained model as a first class artifact in Mosaico, linked to the data it was trained
+on, would close the loop from raw recordings to curated training set to model in a single
+catalog.
+
+## Reproducing
+
+The end to end procedure is in the [README](README.md): ingest DROID and Fractal RT-1
+through mosaico-alchemy, build the pools with
+`scripts/build_balanced_pools_via_mosaico.py`, precompute the CNN cache with
+`scripts/precompute_cnn_features.py`, train with `scripts/train.sh`, and regenerate the
+figures with `scripts/make_figures.py`. Hyperparameters, the seeds and the per dataset
+metrics are persisted under `results/multimodal_indist_v10l_seed7/results.json` (released
+seed; seeds 42 and 123 are alongside it for the three seed aggregate).
+
+## References
+
+- Mosaico, data platform for physical AI: [github.com/mosaico-labs/mosaico](https://github.com/mosaico-labs/mosaico). Python SDK package `mosaicolabs`.
+- Manipulation ingestion plugins: [github.com/mosaico-labs/mosaico-alchemy](https://github.com/mosaico-labs/mosaico-alchemy).
+- DROID dataset, large scale teleoperated manipulation.
+- Fractal RT-1 dataset, RT-1 rollouts in RLDS / TFRecord format.
+- Ilse, Tomczak, Welling, Attention-based Deep Multiple Instance Learning, ICML 2018.
+- MobileNetV3 Small ImageNet weights from torchvision.

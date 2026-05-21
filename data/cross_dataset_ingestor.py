@@ -134,6 +134,19 @@ class CrossDatasetIngestor:
             projected = feature_mapper.project(dsid, dense)
             projected[label_adapters.LABEL_COL] = dense[label_adapters.LABEL_COL].values
 
+            # v10l Fractal extras: 16th kinematic channel (raw gripper residual,
+            # per frame) and the per-episode NL embedding. Added here, before the
+            # canonical NaN-row drop, so the residual stays row-aligned with the
+            # kinematics. The NL embedding is constant across the episode and is
+            # carried as an object column (one 512-D vector per row).
+            if dsid == "fractal_rt1":
+                res = feature_mapper.fractal_gripper_residual(dense)
+                if res is not None:
+                    projected[feature_mapper.GRIPPER_RESIDUAL_FEATURE] = res
+                nl = feature_mapper.extract_nl_emb(dense)
+                if nl is not None:
+                    projected[feature_mapper.NL_EMB_COLUMN] = [nl] * len(projected)
+
             # Carry image bytes forward as an object column if requested.
             if include_images:
                 img_topic = feature_mapper.IMAGE_TOPIC_PER_DATASET.get(dsid)
