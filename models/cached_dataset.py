@@ -1,5 +1,4 @@
-"""Dataset over pre-computed window tensors (kin float32, cnn fp16, label
-float32). Optional Gaussian noise on the kin stream only."""
+"""Dataset over pre-computed window tensors (kin float32, cnn fp16, label float32) with optional kin-stream Gaussian noise."""
 from __future__ import annotations
 
 import numpy as np

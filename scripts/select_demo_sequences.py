@@ -1,18 +1,4 @@
-"""Select demo sequences for the grasp-failure video.
-
-Reconstructs the deterministic v10l DROID test split (seed 42), computes the
-per-window prefix-bag / tail-sliding P(failure) trace for every test episode
-(reusing the exact functions the renderer uses), and ranks candidates:
-
-  - FAILURE: dynamic late rise -> low approach, gradual climb to a confident
-    terminal failure (shows temporal localization). Scored on the trailing
-    tail bag (the model's droid_tail_fraction=0.3 regime).
-  - SUCCESS: stable-low / descent trace (correct, no false alarm). Scored on
-    the full prefix bag.
-
-Read-only except for printing a ranked report and writing a JSON summary of all
-candidate metrics. Does not train, does not modify the model or renderer.
-"""
+"""Rank DROID test episodes by their P(failure) trace and pick demo candidates for the grasp-failure video."""
 from __future__ import annotations
 
 import glob

@@ -1,15 +1,4 @@
-"""Smoke test for the released LateFusionLSTMMIL checkpoint.
-
-Loads the trained weights and verifies:
-- The model loads without errors
-- The trainable parameter count matches the released number (237635)
-- A bag-level forward pass produces the expected logit shape
-- predict_proba returns values in [0, 1]
-
-Intentionally lightweight: needs only torch + numpy + pytest (not the full
-SDK). Designed to run in CI on a clean Linux image with the shipped
-best_model.pt as the only data dependency.
-"""
+"""Smoke test for the released LateFusionLSTMMIL checkpoint: load, param-count, forward, predict_proba."""
 from __future__ import annotations
 
 import sys

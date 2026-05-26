@@ -1,19 +1,4 @@
-"""Regenerate the figures embedded in README.md and TECHNICAL_WRITEUP.md.
-
-Reads the released run's results.json and writes four PNGs into docs/figures/:
-  - loss_curves.png       train/validation loss per epoch (from history)
-  - class_separation.png  per-dataset mean P(failure) on success vs failure bags
-                          plus per-dataset AUC (the finding figure)
-  - architecture.png      LateFusionLSTMMIL schematic
-  - data_pipeline.png     Mosaico query -> extract -> sync -> cache -> train chain
-
-Static diagrams (architecture, data_pipeline) do not depend on the run; the two
-data-driven figures are read from the run directory's results.json.
-
-Usage:
-  python scripts/make_figures.py
-  python scripts/make_figures.py --run-dir results/multimodal_indist_v10l_seed7
-"""
+"""Regenerate the four PNG figures (loss_curves, class_separation, architecture, data_pipeline) into docs/figures/."""
 from __future__ import annotations
 
 import argparse

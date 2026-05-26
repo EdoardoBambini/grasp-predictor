@@ -1,5 +1,4 @@
-"""Pre-compute frozen MobileNetV3 Small features per Mosaico sequence into
-``.npz`` (kin + cnn fp16 + label) aligned to the 50 Hz timeline. Idempotent."""
+"""Idempotent pre-compute of frozen MobileNetV3 Small features per Mosaico sequence into .npz (kin + cnn fp16 + label) at 50 Hz."""
 from __future__ import annotations
 
 import argparse

@@ -1,5 +1,4 @@
-"""Pull sequences from Mosaico, sync at 50 Hz, project onto the 15-feature
-canonical schema, attach the grasp_failure label."""
+"""Pull sequences from Mosaico, sync 50Hz, project onto the 15-feature schema, attach grasp_failure."""
 from __future__ import annotations
 
 import logging

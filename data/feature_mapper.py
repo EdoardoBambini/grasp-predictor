@@ -1,6 +1,4 @@
-"""Canonical projection: per-dataset DataFrameExtractor output -> 8-dim base
-schema (ee xyz + quaternion + gripper) + 7 finite-difference derivatives, plus
-optional RGB image topic for the multimodal path."""
+"""Canonical projection -> 8-dim base schema + 7 finite-difference derivatives, plus optional RGB topic for the multimodal path."""
 from __future__ import annotations
 
 import io

@@ -1,5 +1,4 @@
-"""Per-dataset adapters returning a grasp_failure Series (0=success, 1=failure)
-aligned to the df timestamps."""
+"""Per-dataset adapters returning a grasp_failure Series (0=success, 1=failure) aligned to df timestamps."""
 from __future__ import annotations
 
 import logging

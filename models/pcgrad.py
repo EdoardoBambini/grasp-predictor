@@ -1,20 +1,4 @@
-"""PCGrad: Projecting Conflicting Gradients (Yu et al. 2020, NeurIPS).
-
-Wraps a torch optimizer to perform gradient surgery in multi-task settings.
-For each pair of task gradients (g_i, g_j), if cos(g_i, g_j) < 0 the algorithm
-projects g_i onto the plane normal to g_j:
-
-    g_i <- g_i - (g_i . g_j / ||g_j||^2) * g_j
-
-This prevents a dominant task gradient from cancelling a subordinate one when
-they point into opposing semispaces, the failure mode behind the DROID-vs-Fractal
-class_separation collapse where DROID's terminal-impulse gradient eats Fractal's
-weaker task-success signal.
-
-Standard reduction over the per-task projected gradients: 'mean' (default) or
-'sum'. The optimizer's step() is unchanged; only the .grad accumulation is
-intercepted.
-"""
+"""PCGrad gradient surgery wrapper for multi-task training (Yu et al. 2020, NeurIPS)."""
 from __future__ import annotations
 
 import random

@@ -1,16 +1,4 @@
-"""Bag-level dataset for MIL training: one bag = one sequence, its windows are
-the instances. Supports optional v10h+ tail-fraction window filtering on FAILURE
-bags (keep only the last ``tail_fraction`` of windows), which matches the model's
-evaluation regime for terminally-failing datasets (DROID, droid_tail_fraction=0.3).
-
-NOTE (reconstructed file): the public surface - constructor args, the
-tail-fraction filtering block, __len__, __getitem__ - matches what the trainer
-and ``LateFusionLSTMMIL.forward`` expect:
-    X_kin (B, M, T, kin_dim), X_cnn (B, M, T, cnn_dim), mask (B, M),
-    nl_emb (B, 512), is_droid (B,).
-The __init__/collate plumbing is rebuilt functionally; verify against the trainer
-if a field name differs.
-"""
+"""Bag-level dataset for MIL training (one bag = one sequence) with optional tail-fraction window filtering on failure bags."""
 from __future__ import annotations
 
 from typing import Dict, List, Optional

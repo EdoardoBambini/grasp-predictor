@@ -1,21 +1,4 @@
-"""Pick demo sequences for the video from DROID episodes HELD OUT of the seed-7
-model's train/val/test split, and write the acts JSON.
-
-Why held-out: the demo must show the model on sequences it never saw during
-training OR evaluation. The seed-7 split selects ~2.5k of the ~4.3k cached DROID
-episodes; the remaining ~1.8k are held out and are the demo pool.
-
-Selection (mirrors scripts/select_demo_sequences.py scoring, reused verbatim):
-  - FAILURE: true-failure episodes the model scores high on its trailing tail
-    bag (the droid_tail_fraction=0.3 regime), ranked for a dynamic late rise.
-  - SUCCESS: true-success episodes the model keeps low on the full prefix bag.
-
-Two passes keep it fast on CPU: pass 1 scores every candidate with one bag
-forward; pass 2 computes the full window trace only for the top candidates.
-
-Writes results/video_overlay_demo/acts_v10l_droid_test.json (overwrites in place).
-Read-only otherwise (no training, no model changes).
-"""
+"""Pick demo sequences from DROID episodes held out of the train/val/test split and write the acts JSON."""
 from __future__ import annotations
 
 import glob

@@ -1,5 +1,4 @@
-"""Render per-act MP4s: source video frames overlaid with the classifier's
-per-frame P(failure) trace, in passive-monitoring mode."""
+"""Render per-act MP4s: source video frames overlaid with per-frame P(failure) trace."""
 from __future__ import annotations
 
 import argparse

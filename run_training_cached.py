@@ -1,5 +1,4 @@
-"""Train the LateFusionLSTM jointly on all datasets in the CNN feature cache,
-evaluate per dataset. Stratified 70/15/15 split, seed 42."""
+"""Train LateFusionLSTM jointly on all datasets in the CNN feature cache, evaluate per dataset."""
 from __future__ import annotations
 
 import argparse

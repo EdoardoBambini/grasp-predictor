@@ -1,19 +1,4 @@
-"""Multiple Instance Learning model on top of the cached visuo-kinematic features.
-
-Drops the per-window classification head used by LateFusionLSTM and replaces it
-with a bag-level pipeline:
-  - WindowEncoder produces a 256-dim embedding per window (same recipe as
-    LateFusionLSTM, minus the head).
-  - GatedAttentionPool (Ilse et al., ICML 2018) reduces the M windows of a bag
-    to a single bag embedding via tanh*sigmoid gated attention.
-  - A small MLP head outputs a single logit per bag.
-
-The bag = an entire sequence; the windows inside it are the instances. The
-loss is computed once per bag against the bag's sequence-level label, which
-removes the noisy-supervision signal that hurts DROID and Fractal RT-1 in the
-window-level training (every window of a failure episode currently inherits
-the "failure" label even when it shows clearly successful approach motion).
-"""
+"""MIL model: WindowEncoder + GatedAttentionPool (Ilse et al. 2018) + MLP head -> one logit per bag."""
 from __future__ import annotations
 
 import torch

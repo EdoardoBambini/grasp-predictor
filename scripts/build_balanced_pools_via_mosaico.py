@@ -1,27 +1,4 @@
-"""Build per-dataset success/failure pools using Mosaico queries.
-
-This script is what justifies the brief's claim that Mosaico's query layer
-enables custom training-set curation cross-format:
-
-- DROID:        server-side QuerySequence on user_metadata.is_episode_successful
-- Reassemble:   server-side Query on QueryTopic("/grasp_failure_label") +
-                Boolean.Q.data.eq(True/False). The topic-name filter is
-                essential - without it the Boolean predicate would match
-                every Boolean field in every topic of the catalog.
-- Fractal RT-1: client-side iteration via SequenceHandler. The grasp label
-                is the terminal value of /step/reward, which the ontology
-                query cannot express (it matches point-values, not the last
-                sample of a topic).
-
-Output: results/pools_via_mosaico.json with structure
-    {
-      "generated_at": <iso8601 utc>,
-      "host": "...", "port": ...,
-      "droid":       {"success": [name1, ...], "failure": [...]},
-      "reassemble":  {"success": [...], "failure": [...]},
-      "fractal_rt1": {"success": [...], "failure": [...]}
-    }
-"""
+"""Build per-dataset success/failure pools using Mosaico queries; writes results/pools_via_mosaico.json."""
 from __future__ import annotations
 
 import argparse
@@ -124,10 +101,9 @@ def query_fractal_pools(client, cap: int | None = None,
          cross_dataset_ingestor -> SyncTransformer -> label_adapters.label_fractal_rt1).
     The labels are therefore Mosaico-derived (label_adapter applied during
     ingest), just persisted via the cache to avoid recomputing them every time
-    we want to change the train ratio. This matches what the project brief asks
-    for: cross-format curation backed by Mosaico, here a hybrid server-query +
-    cached-label path because the server-side query layer has no terminal-of-
-    topic predicate yet."""
+    we want to change the train ratio. Hybrid server-query + cached-label path
+    because the server-side query layer has no terminal-of-topic predicate
+    yet."""
     import glob as _glob
     import os as _os
     import numpy as _np

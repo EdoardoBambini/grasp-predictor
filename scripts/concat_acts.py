@@ -1,5 +1,4 @@
-"""Concatenate the per-act MP4s produced by ``video_overlay_demo.py`` into a
-single deliverable, with intro, per-act title cards, and outro."""
+"""Concatenate per-act MP4s from video_overlay_demo.py into a single deliverable with intro, title cards, outro."""
 from __future__ import annotations
 
 import argparse
