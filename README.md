@@ -21,7 +21,7 @@ Fractal RT-1. Full design and analysis are in [`TECHNICAL_WRITEUP.md`](TECHNICAL
 
 Metrics from `results/multimodal_indist_v10l_seed7/results.json`. Validation and test
 partitions sit at each dataset's natural failure prior, so the per-dataset breakdown is
-the production-representative view.
+the production-representative view
 
 | Dataset      | AUC (seed 7) | Class sep (seed 7) | Accuracy (seed 7) | AUC (3-seed)  | Class sep (3-seed) |
 |--------------|--------------|--------------------|-------------------|---------------|--------------------|
